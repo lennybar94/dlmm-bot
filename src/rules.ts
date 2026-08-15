@@ -35,7 +35,7 @@ export const DEFAULT_RULES: RuleSet = {
   volPenalty: -0.1,
   minFeeTvlRatio24h: config.minFeeTvlRatio24h,
   rebalanceThreshold: config.rebalanceThreshold,
-  strategyByVol: { low: "curve", mid: "spot-spread", high: "spot-wide" },
+  strategyByVol: { low: "curve", mid: "spot-spread", high: "bidask-dip" },
   reason: "règles initiales (défauts .env)",
 };
 

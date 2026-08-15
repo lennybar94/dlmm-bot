@@ -57,6 +57,11 @@ export function scorePool(p: Pool, vol24h: number, rules: RuleSet): { score: num
   if (p.launchpad) signals.push(`launchpad: ${p.launchpad}`);
   if (p.farm_apr > 10) signals.push(`farm APR ${p.farm_apr.toFixed(0)}%`);
   if (vol24h > 0.5) signals.push(`volatilité élevée (${(vol24h * 100).toFixed(0)}%/j)`);
+  // Playbook quick in & out (LP Army) : volume ≥ 30k$/min ≈ ≥ 900k$/30min
+  if (p.volume_1h >= 900_000) signals.push("volume burst (≥30k$/min sur 1h)");
+  // Insight LP Army : gros bin step = couverture de dump large (200 bp ≈ -75%
+  // en ~70 bins) + fees dynamiques qui s'envolent sur gros volume
+  if (p.bin_step >= 100) signals.push(`bin step large (${p.bin_step} bp — couverture dump -75% en ~${Math.round(Math.log(0.25) / Math.log(1 + p.bin_step / 10000))} bins)`);
   if (score >= 55) signals.push("top opportunité");
   return { score, signals };
 }

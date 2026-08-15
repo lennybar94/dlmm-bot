@@ -257,17 +257,30 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   ).run(now, pos.id, price, valueUsd, fees, ilUsd, netPnlUsd, ev.inRange ? 1 : 0);
 
   // --- Triggers ---
+  const isDip = pos.strategy === "bidask-dip";
   // Hard stop : chute > maxDailyDrop entre le prix de début de journée et maintenant.
+  // bidask-dip : l'échelle EST le stop (achat de la chute jusqu'à -75%) → stop
+  // élargi à -85% (protection rug seulement), pas de stop quotidien.
   const dayPrice = pos.day_start_price ?? pos.entry_price;
   const dayDrop = (dayPrice - price) / dayPrice;
-  if (dayDrop > config.hardStopDailyDrop) {
+  const stopThreshold = isDip ? 0.85 : config.hardStopDailyDrop;
+  if (dayDrop > stopThreshold) {
     closePosition(pos.id, "hard-stop", `Chute de ${(dayDrop * 100).toFixed(1)}% depuis le début de journée`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
   // Rebalance : drift trop important → ré-ouvrir centré (friction 0.3%).
   // Seuil dynamique : appris par le tuner (règles versionnées).
-  if (ev.drift > getRules().rebalanceThreshold) {
+  // bidask-dip : JAMAIS de rebalance (range volontairement unidirectionnel —
+  // le recentrage détruirait l'échelle anti-dump).
+  if (!isDip && ev.drift > getRules().rebalanceThreshold) {
     rebalancePosition(pos.id, price, ev.valueY * yUsd);
+  }
+  // Exit "quand c'est vert" (playbook LP Army) : si la position était sous
+  // l'eau au mark précédent et revient à ≥ dépôt → on réalise. S'applique
+  // aux échelles anti-dump qui ont attrapé le rebond.
+  if (isDip && (pos.last_value_usd ?? 0) < pos.deposit_usd && valueUsd >= pos.deposit_usd) {
+    closePosition(pos.id, "recovery-exit", `Retour à l'équilibre après être passé sous l'eau (${valueUsd.toFixed(2)}$ ≥ ${pos.deposit_usd}$)`);
+    return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
   // Claim : seuil de frais atteint → claim paper.
   if (fees >= config.minClaimUsd) {

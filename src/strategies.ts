@@ -45,9 +45,21 @@ export const STRATEGY_PRESETS: Record<string, StrategyPreset> = {
     oneSided: "none",
     description: "Liquidité aux bords — DCA / marchés volatils.",
   },
+  // Playbook LP Army (Tikz/VladimirKovacs, MeteoraFR) : SOL-only, BidAsk,
+  // range du prix actuel jusqu'à -70/-80% de dump. Échelle d'achat de la
+  // chute + frais dynamiques élevés sur gros volumes. Positions AFK heures/jours.
+  "bidask-dip": {
+    name: "bidask-dip",
+    minBinsPerSide: 35,
+    maxBinsPerSide: 90,
+    sdkStrategy: "BidAsk",
+    oneSided: "y",
+    description: "BidAsk SOL-only du prix courant jusqu'à -75% (échelle anti-dump, style LP Army).",
+  },
 };
 
 export const DEFAULT_STRATEGY = "spot-spread";
+export const DIP_DEFAULT_TARGET = 0.75; // couverture de dump par défaut (75%)
 
 /** Volatilité réalisée journalière (log-returns, écart-type × √24 pour 1h→24h). */
 export function realizedVolatility(candles: OhlcvCandle[]): number {
@@ -87,6 +99,17 @@ export function buildStrategyHint(
   strategyName = DEFAULT_STRATEGY
 ): StrategyHint {
   const preset = STRATEGY_PRESETS[strategyName] ?? STRATEGY_PRESETS[DEFAULT_STRATEGY];
+  if (strategyName === "bidask-dip") {
+    // Playbook LP Army : maxBin = prix actuel, minBin = jusqu'à -75% de dump.
+    const bins = Math.max(preset.minBinsPerSide, Math.min(preset.maxBinsPerSide, 70));
+    return {
+      strategy: preset.name,
+      minBinId: activeBinId - bins,
+      maxBinId: activeBinId,
+      binsPerSide: bins,
+      vol_24h: volDaily,
+    };
+  }
   const perSide = binsPerSideForVolatility(volDaily, preset);
   return {
     strategy: preset.name,

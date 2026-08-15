@@ -51,7 +51,8 @@ export type StrategyName =
   | "spot-spread"
   | "spot-wide"
   | "curve"
-  | "bidask";
+  | "bidask"
+  | "bidask-dip";
 
 export interface StrategyPreset {
   name: StrategyName;
