@@ -124,12 +124,15 @@ export async function exportData(): Promise<string> {
     p: s.net_pnl_usd,
   }));
 
+  // Journal : 48h, sans le bruit des scans/monitors (toutes les 15 min),
+  // limité aux événements à valeur (open, close, rebalance, claim, stop, review, tune).
   const events = (db
     .prepare(
       `SELECT created_at, position_id, pool_address, type, message FROM events
-       WHERE created_at > ? ORDER BY created_at DESC LIMIT 100`
+       WHERE created_at > ? AND type NOT IN ('scan', 'monitor')
+       ORDER BY created_at DESC LIMIT 40`
     )
-    .all(now - 7 * 86_400_000) as Record<string, unknown>[]).map((e) => ({
+    .all(now - 48 * 3_600_000) as Record<string, unknown>[]).map((e) => ({
     t: e.created_at,
     type: e.type,
     msg: e.message,

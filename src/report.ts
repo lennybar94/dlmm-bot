@@ -76,9 +76,12 @@ export function buildDailyReport(): string {
     lines.push("");
   }
 
+  // Événements des 24h (sans le bruit scan/monitor — même règle que le dashboard)
   const events = db
     .prepare(
-      `SELECT type, message, created_at FROM events WHERE created_at > ? ORDER BY created_at DESC LIMIT 8`
+      `SELECT type, message, created_at FROM events
+       WHERE created_at > ? AND type NOT IN ('scan', 'monitor')
+       ORDER BY created_at DESC LIMIT 8`
     )
     .all(Date.now() - 86_400_000) as { type: string; message: string; created_at: number }[];
   if (events.length) {
