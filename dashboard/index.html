@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DLMM Bot — Opportunités & Portefeuille</title>
+<style>
+  :root {
+    --orange: #EA580C;
+    --orange-dark: #C2410C;
+    --ink: #1C1917;
+    --paper: #FAFAF9;
+    --card: #FFFFFF;
+    --line: #E7E5E4;
+    --muted: #78716C;
+    --green: #16A34A;
+    --red: #DC2626;
+    --amber: #D97706;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Archivo", "Helvetica Neue", system-ui, sans-serif;
+    background: var(--paper); color: var(--ink);
+    padding: 24px; max-width: 1400px; margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 16px; border-bottom: 3px solid var(--ink); padding-bottom: 12px; margin-bottom: 20px; }
+  header h1 { font-size: 26px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.5px; }
+  header h1 span { color: var(--orange); }
+  header .meta { color: var(--muted); font-size: 13px; margin-left: auto; }
+  .badge {
+    display: inline-block; padding: 2px 10px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px; color: #fff;
+    background: var(--orange); clip-path: polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
+  }
+  .badge.paper { background: var(--ink); }
+  .badge.ok { background: var(--green); }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); padding: 14px 16px; position: relative; }
+  .kpi::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background: var(--orange); }
+  .kpi .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); font-weight: 700; }
+  .kpi .value { font-size: 24px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  section { background: var(--card); border: 1px solid var(--line); margin-bottom: 20px; }
+  section > h2 {
+    font-size: 14px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px;
+  }
+  section > h2 .count { background: var(--ink); color: #fff; font-size: 11px; padding: 1px 8px; border-radius: 99px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #FFF7ED; }
+  .sig { display: inline-block; font-size: 11px; background: #FFEDD5; color: var(--orange-dark); padding: 1px 8px; margin: 1px 4px 1px 0; border-radius: 99px; font-weight: 600; }
+  .strat { font-size: 11px; background: var(--ink); color: #fff; padding: 1px 8px; border-radius: 3px; font-weight: 600; }
+  .chart { padding: 16px; }
+  canvas { width: 100%; height: 240px; display: block; }
+  .events { padding: 8px 16px 16px; font-size: 13px; }
+  .events .ev { padding: 5px 0; border-bottom: 1px dashed var(--line); display: flex; gap: 10px; }
+  .events .ev:last-child { border-bottom: none; }
+  .events .t { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .events .ty { font-weight: 700; text-transform: uppercase; font-size: 11px; color: var(--orange); white-space: nowrap; }
+  .empty { padding: 24px; color: var(--muted); text-align: center; font-style: italic; }
+  details.acc { border-bottom: 1px solid var(--line); }
+  details.acc:last-child { border-bottom: none; }
+  details.acc summary { padding: 12px 16px; cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; display: flex; gap: 10px; align-items: center; }
+  details.acc summary::before { content: "▸"; color: var(--orange); transition: transform 0.15s; }
+  details.acc[open] summary::before { transform: rotate(90deg); }
+  details.acc .body { padding: 0 16px 14px; }
+  footer { color: var(--muted); font-size: 11px; text-align: center; margin-top: 24px; }
+  @media (max-width: 800px) { body { padding: 12px; } .kpis { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>DLMM <span>Bot</span></h1>
+  <span class="badge paper" id="modeBadge">Paper only</span>
+  <span class="badge ok" id="liveBadge">Live</span>
+  <div class="meta" id="meta">…</div>
+</header>
+
+<div class="kpis" id="kpis"></div>
+
+<section>
+  <h2>Portefeuille <span class="count" id="posCount">0</span></h2>
+  <div class="chart"><canvas id="valueChart"></canvas></div>
+  <table id="posTable">
+    <thead><tr>
+      <th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>Valeur</th><th>PnL net</th>
+      <th>Frais</th><th>IL</th><th>Range (bins)</th><th>Entrée</th><th>Rebal.</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Opportunités <span class="count" id="oppCount">0</span></h2>
+  <div id="opps"></div>
+</section>
+
+<section>
+  <h2>Positions fermées <span class="count" id="closedCount">0</span></h2>
+  <table id="closedTable">
+    <thead><tr><th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>Valeur</th><th>Frais</th><th>PnL</th><th>Raison</th><th>Fermée</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Journal <span class="count" id="evCount">0</span></h2>
+  <div class="events" id="events"></div>
+</section>
+
+<footer>DLMM Bot — données DLMM Data API (dlmm.datapi.meteora.ag) · paper trading · pas un conseil financier</footer>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const fmt = (v, d = 0) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : Number(v).toLocaleString("fr-FR", { minimumFractionDigits: d, maximumFractionDigits: d });
+const usd = (v, d = 0) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("fr-FR", { style: "currency", currency: "USD", minimumFractionDigits: d, maximumFractionDigits: d });
+const pct = (v, d = 1) => (v === null || v === undefined) ? "—" : (Number(v) * 100).toFixed(d) + "%";
+const sign = (v) => (v > 0 ? "pos" : v < 0 ? "neg" : "");
+const timeAgo = (t) => { const s = Math.floor((Date.now() - t) / 1000); if (s < 60) return "à l'instant"; if (s < 3600) return "il y a " + Math.floor(s / 60) + " min"; if (s < 86400) return "il y a " + Math.floor(s / 3600) + " h"; return "il y a " + Math.floor(s / 86400) + " j"; };
+const dstr = (t) => new Date(t).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+function drawLine(canvas, series, color = "#EA580C") {
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!series || series.length < 2) {
+    ctx.fillStyle = "#A8A29E"; ctx.font = "13px Archivo, sans-serif";
+    ctx.fillText("Pas encore de données — l'historique se construit au fil des marks.", 16, h / 2);
+    return;
+  }
+  const min = Math.min(...series), max = Math.max(...series);
+  const pad = 8, span = (max - min) || 1;
+  const pts = series.map((v, i) => [pad + (i / (series.length - 1)) * (w - 2 * pad), h - pad - ((v - min) / span) * (h - 2 * pad)]);
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = "round";
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+  ctx.stroke();
+  ctx.fillStyle = "#A8A29E"; ctx.font = "11px Archivo, sans-serif";
+  ctx.fillText(usd(min, 0), 6, h - 6);
+  ctx.fillText(usd(max, 0), 6, 12);
+}
+
+async function load() {
+  try {
+    const res = await fetch("/api/dashboard.json", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const d = await res.json();
+    render(d);
+  } catch (e) {
+    $("#meta").textContent = "Erreur de chargement : " + e.message;
+  }
+}
+
+function render(d) {
+  $("#meta").textContent = "MAJ " + dstr(d.generated_at) + " · " + timeAgo(d.generated_at);
+  const s = d.summary;
+
+  const kpis = [
+    ["Valeur portefeuille", usd(s.value_usd, 0), s.open + " positions ouvertes"],
+    ["PnL net", usd(s.net_pnl_usd, 2), "valeur + frais − investi", sign(s.net_pnl_usd)],
+    ["Frais encaissés", usd(s.fees_earned_usd + s.fees_claimed_usd, 2), "dont claims " + usd(s.fees_claimed_usd, 2)],
+    ["Investi", usd(s.invested_usd, 0), s.rebalances + " rebalances"],
+  ];
+  $("#kpis").innerHTML = kpis.map(([l, v, sub, cls]) =>
+    `<div class="kpi"><div class="label">${l}</div><div class="value ${cls || ""}">${v}</div><div class="sub">${sub}</div></div>`
+  ).join("");
+
+  // Graphique : valeur agrégée du portefeuille
+  const byTime = new Map();
+  for (const sn of d.snapshots || []) {
+    byTime.set(sn.t, (byTime.get(sn.t) || 0) + (sn.v || 0));
+  }
+  const times = [...byTime.keys()].sort((a, b) => a - b);
+  drawLine($("#valueChart"), times.map((t) => byTime.get(t)));
+
+  // Positions
+  $("#posCount").textContent = d.positions.length;
+  $("#posTable tbody").innerHTML = (d.positions || []).map((p) => `
+    <tr>
+      <td><strong>${p.name}</strong></td>
+      <td><span class="strat">${p.strategy}</span></td>
+      <td>${usd(p.deposit_usd)}</td>
+      <td>${usd(p.value_usd)}</td>
+      <td class="${sign(p.net_pnl)}">${usd(p.net_pnl, 2)}</td>
+      <td>${usd(p.fees, 2)}</td>
+      <td class="${sign(p.il_usd)}">${usd(p.il_usd, 2)}</td>
+      <td>${p.min_bin_id} … ${p.max_bin_id}</td>
+      <td>${p.entry_price != null ? p.entry_price.toPrecision(4) : "—"}</td>
+      <td>${p.rebalance_count}</td>
+    </tr>`).join("") || `<tr><td colspan="10" class="empty">Aucune position ouverte — lance `npm run open:paper` après un scan.</td></tr>`;
+
+  // Opportunités : accordéons par score
+  $("#oppCount").textContent = (d.opportunities || []).length;
+  $("#opps").innerHTML = (d.opportunities || []).map((o) => {
+    const h = o.strategy_hint || {};
+    const sigs = (o.signals || []).map((x) => `<span class="sig">${x}</span>`).join("");
+    return `<details class="acc">
+      <summary><span style="min-width:52px">${o.score.toFixed(1)}</span> ${o.name}
+        <span class="strat">${h.strategy || "—"}</span>
+        <span style="margin-left:auto;color:var(--muted);font-weight:400;font-size:12px">APR ${pct(o.fee_apr_24h, 0)} · TVL ${fmt(o.tvl / 1e6, 1)}M$</span></summary>
+      <div class="body">
+        <table><tr>
+          <th>Vol 24h</th><th>Fees/TVL 24h</th><th>Bin step</th><th>Prix</th><th>Volatilité 24h</th><th>Range suggéré</th>
+        </tr><tr>
+          <td>${fmt(o.volume_24h / 1e6, 1)}M$</td><td>${o.fee_tvl_ratio_24h != null ? o.fee_tvl_ratio_24h.toFixed(2) + "%" : "—"}</td>
+          <td>${o.bin_step}</td><td>${o.current_price != null ? o.current_price.toPrecision(4) : "—"}</td>
+          <td>${o.vol_24h != null ? (o.vol_24h * 100).toFixed(0) + "%/j" : "—"}</td>
+          <td>bins [${h.minBinId} … ${h.maxBinId}]</td>
+        </tr></table>
+        <div style="margin-top:8px">${sigs || '<span style="color:var(--muted)">aucun signal</span>'}</div>
+      </div>
+    </details>`;
+  }).join("") || `<div class="empty">Aucune opportunité — lance `npm run scan:pools`.</div>`;
+
+  // Positions fermées
+  $("#closedCount").textContent = (d.closed_positions || []).length;
+  $("#closedTable tbody").innerHTML = (d.closed_positions || []).map((p) => `
+    <tr>
+      <td><strong>${p.name}</strong></td>
+      <td><span class="strat">${p.strategy}</span></td>
+      <td>${usd(p.deposit_usd)}</td>
+      <td>${usd(p.value_usd)}</td>
+      <td>${usd(p.fees, 2)}</td>
+      <td class="${sign(p.net_pnl)}">${usd(p.net_pnl, 2)}</td>
+      <td>${p.close_reason || "—"}</td>
+      <td>${dstr(p.closed_at)}</td>
+    </tr>`).join("") || `<tr><td colspan="8" class="empty">Aucune position fermée.</td></tr>`;
+
+  // Journal
+  $("#evCount").textContent = (d.events || []).length;
+  $("#events").innerHTML = (d.events || []).map((e) =>
+    `<div class="ev"><span class="t">${dstr(e.t)}</span><span class="ty">${e.type}</span><span>${e.msg}</span></div>`
+  ).join("") || `<div class="empty">Aucun événement.</div>`;
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

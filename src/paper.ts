@@ -1,0 +1,373 @@
+// Moteur PAPER : positions simulées, frais simulés, IL concentré, triggers.
+// Aucune transaction réelle n'est possible ici — PAPER ONLY par construction.
+
+import { db, logEvent } from "./db.js";
+import { config } from "./config.js";
+import { fetchPool } from "./api.js";
+import { STRATEGY_PRESETS, binIdFromPrice } from "./strategies.js";
+import type { MarkResult, OpportunityScore, PaperPositionRow, StrategyName } from "./types.js";
+
+/** Prix d'un bin : base^binId avec base = 1 + bin_step/10000. */
+export function binPrice(binId: number, binStep: number): number {
+  return Math.pow(1 + binStep / 10_000, binId);
+}
+
+/**
+ * Estimation du prix du token quote (Y) en USD via le TVL du pool :
+ * tvl ≈ (x_amount × price + y_amount) × yUsd → yUsd = tvl / (x×p + y).
+ * Fallback 1.0 (pools USDC) — à défaut d'oracle, c'est une approximation honnête.
+ */
+export function estimateYUsd(pool: {
+  tvl: number;
+  token_x_amount: number;
+  token_y_amount: number;
+  current_price: number;
+}): number {
+  const denom = pool.token_x_amount * pool.current_price + pool.token_y_amount;
+  if (!denom || denom <= 0) return 1;
+  const yUsd = pool.tvl / denom;
+  return yUsd > 0.01 && yUsd < 100_000 ? yUsd : 1;
+}
+
+interface LiquidityState {
+  L: number;
+  pa: number;
+  pb: number;
+  x0: number; // dépôt X (unités token) — sur la courbe
+  y0: number; // dépôt Y (unités token) — sur la courbe
+}
+
+/**
+ * Construit l'état de liquidité (approximation Uniswap v3 d'un range discret DLMM).
+ * Le dépôt (x0, y0) est projeté SUR la courbe : L est dérivé du dépôt total,
+ * puis x0/y0 en découlent — cohérent (V(P0) = dépôt, IL(P0) = 0).
+ */
+export function buildLiquidity(opts: {
+  depositY: number; // dépôt total en unités Y
+  price: number;
+  minBinId: number;
+  maxBinId: number;
+  binStep: number;
+  oneSided?: "none" | "x" | "y";
+}): LiquidityState {
+  const { depositY, price: p0, binStep } = opts;
+  const pa = binPrice(opts.minBinId, binStep);
+  const pb = binPrice(opts.maxBinId, binStep);
+  if (!(pa < pb) || p0 <= 0) throw new Error("range invalide");
+
+  const sp0 = Math.sqrt(p0);
+  const spa = Math.sqrt(pa);
+  const spb = Math.sqrt(pb);
+
+  let L: number;
+  let x0: number;
+  let y0: number;
+  if (opts.oneSided === "x") {
+    // tout en X (position au-dessus du range) : x = L(1/√Pa − 1/√Pb)
+    x0 = depositY / p0;
+    y0 = 0;
+    L = x0 > 0 ? (x0 * spa * spb) / (spb - spa) : 0;
+  } else if (opts.oneSided === "y") {
+    // tout en Y (position en dessous du range) : y = L(√Pb − √Pa)
+    x0 = 0;
+    y0 = depositY;
+    L = depositY / (spb - spa);
+  } else {
+    // balancé : L = dépôt / facteur de valeur au prix courant
+    const factor = 2 * sp0 - p0 / spb - spa;
+    if (factor <= 0) throw new Error("prix hors range");
+    L = depositY / factor;
+    // Projection sur la courbe
+    x0 = L * (1 / sp0 - 1 / spb);
+    y0 = L * (sp0 - spa);
+  }
+  return { L, pa, pb, x0, y0 };
+}
+
+/** Valeur (en unités Y) de la position à un prix P. */
+export function valueInY(state: LiquidityState, price: number): number {
+  const { L, pa, pb } = state;
+  if (L <= 0) return 0;
+  const sp = Math.sqrt(price);
+  const spa = Math.sqrt(pa);
+  const spb = Math.sqrt(pb);
+  if (price < pa) return L * price * (1 / spa - 1 / spb);
+  if (price > pb) return L * (spb - spa);
+  return L * (2 * sp - price / spb - spa);
+}
+
+/** Valeur "hold" (sans provision de liquidité) : x0×P + y0, en unités Y. */
+export function holdValue(state: LiquidityState, price: number): number {
+  return state.x0 * price + state.y0;
+}
+
+/** IL en unités Y (négatif = perte vs hold). */
+export function impermanentLoss(state: LiquidityState, price: number): number {
+  return valueInY(state, price) - holdValue(state, price);
+}
+
+export interface OpenResult {
+  positionId: number;
+  amountX: number;
+  amountY: number;
+  minBinId: number;
+  maxBinId: number;
+  entryPrice: number;
+}
+
+/** Ouvre une position paper sur une opportunité scorée. */
+export function openPaperPosition(opp: OpportunityScore, depositUsd = config.depositUsdPerPosition): OpenResult {
+  const p = opp.pool;
+  const hint = opp.strategyHint;
+  const preset = STRATEGY_PRESETS[hint.strategy] ?? STRATEGY_PRESETS["spot-spread"];
+  const yUsd = estimateYUsd(p);
+  const entryPrice = p.current_price;
+
+  const activeBinId = binIdFromPrice(entryPrice, p.bin_step);
+  const minBinId = hint.minBinId || activeBinId - 10;
+  const maxBinId = hint.maxBinId || activeBinId + 10;
+  const depositY = depositUsd / yUsd;
+  const liq = buildLiquidity({
+    depositY,
+    price: entryPrice,
+    minBinId,
+    maxBinId,
+    binStep: p.bin_step,
+    oneSided: preset.oneSided,
+  });
+  const amountX = liq.x0;
+  const amountY = liq.y0;
+
+  const info = db
+    .prepare(
+      `INSERT INTO paper_positions
+       (opened_at, pool_address, name, strategy, deposit_usd, min_bin_id, max_bin_id, bin_step,
+        entry_price, entry_active_bin, token_x_symbol, token_y_symbol, amount_x, amount_y,
+        fees_earned_usd, fees_claimed_usd, status, last_mark_price, last_value_usd, last_il_usd,
+        rebalance_count, day_start_price, last_mark_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'open', ?, ?, ?, 0, ?, ?)`
+    )
+    .run(
+      Date.now(),
+      p.address,
+      p.name,
+      hint.strategy,
+      depositUsd,
+      minBinId,
+      maxBinId,
+      p.bin_step,
+      entryPrice,
+      activeBinId,
+      p.token_x.symbol,
+      p.token_y.symbol,
+      amountX,
+      amountY,
+      entryPrice,
+      depositUsd,
+      0,
+      entryPrice,
+      Date.now()
+    );
+
+  const positionId = Number(info.lastInsertRowid);
+  logEvent(
+    "open",
+    `Position paper ouverte : ${p.name} — ${hint.strategy}, ${depositUsd}$ (${amountX.toFixed(4)} ${p.token_x.symbol} / ${amountY.toFixed(2)} ${p.token_y.symbol}), bins [${minBinId}..${maxBinId}]`,
+    { positionId, poolAddress: p.address }
+  );
+  return { positionId, amountX, amountY, minBinId, maxBinId, entryPrice };
+}
+
+export function getOpenPositions(): PaperPositionRow[] {
+  return db
+    .prepare("SELECT * FROM paper_positions WHERE status = 'open' ORDER BY opened_at ASC")
+    .all() as PaperPositionRow[];
+}
+
+export function getPosition(id: number): PaperPositionRow | undefined {
+  return db.prepare("SELECT * FROM paper_positions WHERE id = ?").get(id) as
+    | PaperPositionRow
+    | undefined;
+}
+
+export interface PositionValue {
+  valueY: number;
+  holdY: number;
+  ilY: number;
+  inRange: boolean;
+  drift: number; // 0..1 (1 = sorti du range)
+}
+
+/** Évalue une position à un prix donné. */
+export function evaluatePosition(pos: PaperPositionRow, price: number): PositionValue {
+  // Les montants stockés (x0, y0) sont sur la courbe → on en dérive L.
+  const p0 = pos.entry_price;
+  const pa = binPrice(pos.min_bin_id, pos.bin_step);
+  const pb = binPrice(pos.max_bin_id, pos.bin_step);
+  const sp0 = Math.sqrt(p0);
+  const spa = Math.sqrt(pa);
+  const spb = Math.sqrt(pb);
+  let L = 0;
+  if (pos.amount_y > 0 && pos.amount_x > 0) L = pos.amount_y / (sp0 - spa);
+  else if (pos.amount_y > 0) L = pos.amount_y / (spb - spa); // Y-only
+  else if (pos.amount_x > 0) L = (pos.amount_x * spa * spb) / (spb - spa); // X-only
+  const state: LiquidityState = { L, pa, pb, x0: pos.amount_x, y0: pos.amount_y };
+  const valueY = valueInY(state, price);
+  const holdY = holdValue(state, price);
+  const ilY = valueY - holdY;
+  const activeBin = binIdFromPrice(price, pos.bin_step);
+  const inRange = activeBin >= pos.min_bin_id && activeBin <= pos.max_bin_id;
+  const centerBin = (pos.min_bin_id + pos.max_bin_id) / 2;
+  const halfSpan = Math.max(1, (pos.max_bin_id - pos.min_bin_id) / 2);
+  const drift = Math.min(1, Math.abs(activeBin - centerBin) / halfSpan);
+  return { valueY, holdY, ilY, inRange, drift };
+}
+
+/** Mark-to-market : valeur, frais simulés, IL, triggers (stop, rebalance). */
+export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
+  const pool = await fetchPool(pos.pool_address);
+  const price = pool.current_price;
+  const yUsd = estimateYUsd(pool);
+  const ev = evaluatePosition(pos, price);
+
+  const valueUsd = ev.valueY * yUsd;
+  const holdUsd = ev.holdY * yUsd;
+  const ilUsd = ev.ilY * yUsd;
+
+  // Frais simulés : part du pool encaissée par la position, proportionnelle au temps en range.
+  const lastMarkAt = pos.last_mark_at ?? pos.opened_at;
+  const hours = Math.max(0.016, (Date.now() - lastMarkAt) / 3_600_000);
+  const feeRatio1h = pool.fee_tvl_ratio_1h / 100; // % TVL / heure
+  const inRangeFactor = ev.inRange ? 1 : 0;
+  const feesUsd = valueUsd * feeRatio1h * hours * inRangeFactor;
+  const fees = (pos.fees_earned_usd ?? 0) + feesUsd;
+
+  const netPnlUsd = valueUsd - pos.deposit_usd + fees + (pos.fees_claimed_usd ?? 0);
+
+  const now = Date.now();
+  db.prepare(
+    `UPDATE paper_positions SET last_mark_price = ?, last_value_usd = ?, last_il_usd = ?, fees_earned_usd = ?, last_mark_at = ?
+     WHERE id = ?`
+  ).run(price, valueUsd, ilUsd, fees, now, pos.id);
+  db.prepare(
+    `INSERT INTO pnl_snapshots (taken_at, position_id, price, value_usd, fees_usd, il_usd, net_pnl_usd, in_range)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(now, pos.id, price, valueUsd, fees, ilUsd, netPnlUsd, ev.inRange ? 1 : 0);
+
+  // --- Triggers ---
+  // Hard stop : chute > maxDailyDrop entre le prix de début de journée et maintenant.
+  const dayPrice = pos.day_start_price ?? pos.entry_price;
+  const dayDrop = (dayPrice - price) / dayPrice;
+  if (dayDrop > config.hardStopDailyDrop) {
+    closePosition(pos.id, "hard-stop", `Chute de ${(dayDrop * 100).toFixed(1)}% depuis le début de journée`);
+    return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+  }
+  // Rebalance : drift trop important → ré-ouvrir centré (friction 0.3%).
+  if (ev.drift > config.rebalanceThreshold) {
+    rebalancePosition(pos.id, price, ev.valueY * yUsd);
+  }
+  // Claim : seuil de frais atteint → claim paper.
+  if (fees >= config.minClaimUsd) {
+    db.prepare(
+      "UPDATE paper_positions SET fees_claimed_usd = fees_claimed_usd + ?, fees_earned_usd = 0 WHERE id = ?"
+    ).run(fees, pos.id);
+    logEvent("claim", `Claim paper de ${fees.toFixed(2)}$ de frais sur ${pos.name}`, {
+      positionId: pos.id,
+      poolAddress: pos.pool_address,
+    });
+  }
+
+  return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+}
+
+/** Ferme une position (paper). */
+export function closePosition(id: number, reason: string, detail = ""): void {
+  const pos = getPosition(id);
+  if (!pos) return;
+  db.prepare(
+    "UPDATE paper_positions SET status = 'closed', closed_at = ?, close_reason = ? WHERE id = ?"
+  ).run(Date.now(), reason, id);
+  logEvent("close", `Position fermée (${reason}) : ${pos.name}${detail ? " — " + detail : ""}`, {
+    positionId: id,
+    poolAddress: pos.pool_address,
+  });
+}
+
+/** Recentre la position sur le bin actif (paper, avec friction). */
+export function rebalancePosition(id: number, price: number, valueUsd: number): void {
+  const pos = getPosition(id);
+  if (!pos) return;
+  const activeBin = binIdFromPrice(price, pos.bin_step);
+  const halfSpan = Math.max(1, Math.round((pos.max_bin_id - pos.min_bin_id) / 2));
+  const friction = valueUsd * 0.003; // gas + spread estimés
+  const newMin = activeBin - halfSpan;
+  const newMax = activeBin + halfSpan;
+
+  db.prepare(
+    `UPDATE paper_positions SET min_bin_id = ?, max_bin_id = ?, entry_active_bin = ?, entry_price = ?,
+       day_start_price = ?, last_mark_price = ?, rebalance_count = rebalance_count + 1,
+       last_value_usd = last_value_usd - ?
+     WHERE id = ?`
+  ).run(newMin, newMax, activeBin, price, price, price, friction, id);
+  logEvent(
+    "rebalance",
+    `Rebalance paper sur ${pos.name} : bins [${newMin}..${newMax}] autour du bin ${activeBin} (friction ${friction.toFixed(2)}$)`,
+    { positionId: id, poolAddress: pos.pool_address }
+  );
+}
+
+/** Mark-to-market de toutes les positions ouvertes. */
+export async function markAll(): Promise<{ id: number; result: MarkResult }[]> {
+  const results: { id: number; result: MarkResult }[] = [];
+  for (const pos of getOpenPositions()) {
+    try {
+      results.push({ id: pos.id, result: await markPosition(pos) });
+    } catch (err) {
+      logEvent("mark", `Mark échoué pour ${pos.name}: ${String(err)}`, {
+        positionId: pos.id,
+        poolAddress: pos.pool_address,
+      });
+    }
+  }
+  return results;
+}
+
+export function getPortfolioSummary(): {
+  open: number;
+  investedUsd: number;
+  valueUsd: number;
+  feesEarnedUsd: number;
+  feesClaimedUsd: number;
+  netPnlUsd: number;
+  rebalances: number;
+} {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as open,
+              COALESCE(SUM(CASE WHEN status='open' THEN deposit_usd END),0) as invested,
+              COALESCE(SUM(CASE WHEN status='open' THEN last_value_usd END),0) as value,
+              COALESCE(SUM(fees_earned_usd),0) as fees,
+              COALESCE(SUM(fees_claimed_usd),0) as claimed,
+              COALESCE(SUM(CASE WHEN status='open' THEN last_value_usd - deposit_usd + fees_earned_usd + fees_claimed_usd END),0) as net,
+              COALESCE(SUM(rebalance_count),0) as rebalances
+       FROM paper_positions`
+    )
+    .get() as {
+    open: number;
+    invested: number;
+    value: number;
+    fees: number;
+    claimed: number;
+    net: number;
+    rebalances: number;
+  };
+  return {
+    open: row.open,
+    investedUsd: row.invested,
+    valueUsd: row.value,
+    feesEarnedUsd: row.fees,
+    feesClaimedUsd: row.claimed,
+    netPnlUsd: row.net,
+    rebalances: row.rebalances,
+  };
+}
