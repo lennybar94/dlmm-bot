@@ -97,9 +97,27 @@ export function exportData(): string {
     msg: e.message,
   }));
 
+  // Activité réelle du bot (pour le bandeau de statut "up / périmé / down")
+  const lastScanAt = db.prepare("SELECT MAX(scanned_at) m FROM pool_scans").get() as {
+    m: number | null;
+  };
+  const lastMarkAt = db.prepare("SELECT MAX(taken_at) m FROM pnl_snapshots").get() as {
+    m: number | null;
+  };
+  const lastMonitorAt = db
+    .prepare("SELECT MAX(created_at) m FROM events WHERE type = 'monitor'")
+    .get() as { m: number | null };
+
   const payload = {
     generated_at: now,
     summary: getPortfolioSummary(),
+    last_activity: {
+      last_scan_at: lastScanAt.m ?? null,
+      last_mark_at: lastMarkAt.m ?? null,
+      last_monitor_at: lastMonitorAt.m ?? null,
+      dashboard_started_at: now - Math.round(process.uptime() * 1000),
+      monitor_interval_min: config.monitorIntervalMin,
+    },
     opportunities,
     positions,
     closed_positions: closedPositions,

@@ -32,7 +32,14 @@ export function startDashboard(): void {
       }
       if (url.pathname === "/api/health") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, time: Date.now(), live: config.dashboardLive }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            time: Date.now(),
+            live: config.dashboardLive,
+            uptime_sec: Math.round(process.uptime()),
+          })
+        );
         return;
       }
       const filePath = path.join(root, url.pathname === "/" ? "index.html" : url.pathname);

@@ -34,6 +34,17 @@
   }
   .badge.paper { background: var(--ink); }
   .badge.ok { background: var(--green); }
+  #statusBar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 16px; margin-bottom: 20px; background: var(--card);
+    border: 1px solid var(--line); font-size: 13px; font-weight: 600;
+  }
+  #statusBar .st { color: var(--muted); font-weight: 400; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.ok { background: var(--green); animation: pulse 2s infinite; }
+  .dot.warn { background: var(--amber); animation: pulse 2s infinite; }
+  .dot.down { background: var(--red); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
   .kpi { background: var(--card); border: 1px solid var(--line); padding: 14px 16px; position: relative; }
   .kpi::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background: var(--orange); }
@@ -80,6 +91,8 @@
   <span class="badge ok" id="liveBadge">Live</span>
   <div class="meta" id="meta">…</div>
 </header>
+
+<div id="statusBar">…</div>
 
 <div class="kpis" id="kpis"></div>
 
@@ -159,8 +172,31 @@ async function load() {
   }
 }
 
+function updateStatus(d) {
+  const la = d.last_activity || {};
+  const lastAct = Math.max(la.last_scan_at || 0, la.last_mark_at || 0, la.last_monitor_at || 0);
+  const bar = $("#statusBar");
+  if (!lastAct) {
+    bar.innerHTML = '<span class="dot warn"></span> En attente de la première activité du bot…';
+    return;
+  }
+  const mins = Math.floor((Date.now() - lastAct) / 60000);
+  let cls = "ok", label = "EN LIGNE";
+  if (mins > 120) { cls = "down"; label = "HORS LIGNE"; }
+  else if (mins > 35) { cls = "warn"; label = "DONNÉES PÉRIMÉES"; }
+  const interval = la.monitor_interval_min || 15;
+  const next = la.last_scan_at
+    ? Math.max(0, Math.round((la.last_scan_at + interval * 60000 - Date.now()) / 60000))
+    : null;
+  const parts = [`dernière activité il y a ${mins} min`];
+  if (next !== null) parts.push(`prochain scan dans ~${next} min`);
+  if (la.dashboard_started_at) parts.push("dashboard up depuis " + dstr(la.dashboard_started_at));
+  bar.innerHTML = `<span class="dot ${cls}"></span> <span>${label}</span> <span class="st">${parts.join(" · ")}</span>`;
+}
+
 function render(d) {
   $("#meta").textContent = "MAJ " + dstr(d.generated_at) + " · " + timeAgo(d.generated_at);
+  updateStatus(d);
   const s = d.summary;
 
   const kpis = [
