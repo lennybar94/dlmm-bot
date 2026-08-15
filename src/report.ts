@@ -2,6 +2,7 @@
 
 import { db } from "./db.js";
 import { getPortfolioSummary, getOpenPositions } from "./paper.js";
+import { getRules, getRuleChanges } from "./rules.js";
 
 export function buildDailyReport(): string {
   const s = getPortfolioSummary();
@@ -16,6 +17,32 @@ export function buildDailyReport(): string {
   lines.push(`  PnL net (valeur + frais − investi) : ${s.netPnlUsd >= 0 ? "+" : ""}${s.netPnlUsd.toFixed(2)}$`);
   lines.push(`  Frais encaissés (cumul) : ${(s.feesEarnedUsd + s.feesClaimedUsd).toFixed(2)}$ (dont claims ${s.feesClaimedUsd.toFixed(2)}$)`);
   lines.push(`  Rebalances : ${s.rebalances}`);
+  lines.push("");
+
+  // Statut du bot (fraîcheur de l'activité réelle)
+  const lastScan = db.prepare("SELECT MAX(scanned_at) m FROM pool_scans").get() as {
+    m: number | null;
+  };
+  const lastMark = db.prepare("SELECT MAX(taken_at) m FROM pnl_snapshots").get() as {
+    m: number | null;
+  };
+  const lastAct = Math.max(lastScan.m ?? 0, lastMark.m ?? 0);
+  if (lastAct > 0) {
+    const mins = Math.round((Date.now() - lastAct) / 60000);
+    const status =
+      mins <= 35 ? "EN LIGNE" : mins <= 120 ? "DONNÉES PÉRIMÉES" : "HORS LIGNE";
+    lines.push(`Statut bot : ${status} (dernière activité il y a ${mins} min)`);
+    lines.push("");
+  }
+
+  const rules = getRules();
+  const lastChange = getRuleChanges(1)[0];
+  lines.push(`Règles : v${rules.version}${rules.reason ? ` — ${rules.reason}` : ""}`);
+  if (lastChange) {
+    lines.push(
+      `  Dernier ajustement : ${lastChange.key} ${lastChange.before_value ?? "—"} → ${lastChange.after_value ?? "—"} (${lastChange.reason})`
+    );
+  }
   lines.push("");
 
   const positions = getOpenPositions();
