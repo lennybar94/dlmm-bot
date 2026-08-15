@@ -109,6 +109,55 @@ CREATE TABLE IF NOT EXISTS events (
   payload TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+
+CREATE TABLE IF NOT EXISTS outcome_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL,
+  review_type TEXT NOT NULL,          -- 'closed' (à la fermeture) | 'weekly' (position ouverte ≥ 7j)
+  reviewed_at INTEGER NOT NULL,
+  pool_address TEXT,
+  name TEXT,
+  strategy TEXT,
+  opened_at INTEGER,
+  closed_at INTEGER,
+  age_days REAL,
+  deposit_usd REAL,
+  value_usd REAL,
+  fees_usd REAL,
+  il_usd REAL,
+  net_pnl_usd REAL,
+  net_pnl_pct REAL,
+  exit_reason TEXT,
+  in_range_pct REAL,
+  rebalance_count INTEGER,
+  -- buckets d'évidence (caractéristiques d'entrée, dénormalisées)
+  fee_tvl_ratio_24h REAL,
+  vol_24h REAL,
+  bin_step INTEGER,
+  launchpad TEXT,
+  pool_age_days REAL,
+  tvl REAL
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_pos ON outcome_reviews(position_id, review_type);
+CREATE INDEX IF NOT EXISTS idx_reviews_reviewed ON outcome_reviews(reviewed_at);
+
+CREATE TABLE IF NOT EXISTS rule_sets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  version INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  rules TEXT NOT NULL,
+  reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rule_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL,
+  rule_set_version INTEGER,
+  key TEXT,
+  before_value REAL,
+  after_value REAL,
+  reason TEXT
+);
 `;
 
 db.exec(SCHEMA);

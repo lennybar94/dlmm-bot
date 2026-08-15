@@ -126,6 +126,11 @@
   <div class="events" id="events"></div>
 </section>
 
+<section>
+  <h2>Règles & apprentissage <span class="count" id="rulesVer">v1</span></h2>
+  <div class="body" style="padding:12px 16px" id="learning"></div>
+</section>
+
 <footer>DLMM Bot — données DLMM Data API (dlmm.datapi.meteora.ag) · paper trading · pas un conseil financier</footer>
 
 <script>
@@ -231,7 +236,7 @@ function render(d) {
       <td>${p.min_bin_id} … ${p.max_bin_id}</td>
       <td>${p.entry_price != null ? p.entry_price.toPrecision(4) : "—"}</td>
       <td>${p.rebalance_count}</td>
-    </tr>`).join("") || `<tr><td colspan="10" class="empty">Aucune position ouverte — lance `npm run open:paper` après un scan.</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="10" class="empty">Aucune position ouverte — lance 'npm run open:paper' après un scan.</td></tr>`;
 
   // Opportunités : accordéons par score
   $("#oppCount").textContent = (d.opportunities || []).length;
@@ -254,7 +259,7 @@ function render(d) {
         <div style="margin-top:8px">${sigs || '<span style="color:var(--muted)">aucun signal</span>'}</div>
       </div>
     </details>`;
-  }).join("") || `<div class="empty">Aucune opportunité — lance `npm run scan:pools`.</div>`;
+  }).join("") || `<div class="empty">Aucune opportunité — lance 'npm run scan:pools'.</div>`;
 
   // Positions fermées
   $("#closedCount").textContent = (d.closed_positions || []).length;
@@ -269,6 +274,50 @@ function render(d) {
       <td>${p.close_reason || "—"}</td>
       <td>${dstr(p.closed_at)}</td>
     </tr>`).join("") || `<tr><td colspan="8" class="empty">Aucune position fermée.</td></tr>`;
+
+  // Règles & apprentissage
+  const L = d.learning || {};
+  $("#rulesVer").textContent = "v" + (L.rules ? L.rules.version : "1");
+  const r = L.rules || {};
+  const fmtPct = (v) => (v === null || v === undefined ? "—" : Number(v).toFixed(2) + "%");
+  const rulesRows = [
+    ["Version", "v" + (r.version || 1)],
+    ["Poids APR frais", (r.wApr || 0) + " / 100"],
+    ["Poids stabilité volume", (r.wVolStability || 0) + " / 100"],
+    ["Poids TVL", (r.wTvl || 0) + " / 100"],
+    ["Bonus farm", fmtPct((r.farmBonus || 0) * 100)],
+    ["Pénalité vol extrême", fmtPct((r.volPenalty || 0) * 100)],
+    ["Seuil fees/TVL 24h", fmtPct(r.minFeeTvlRatio24h)],
+    ["Seuil rebalance (drift)", (r.rebalanceThreshold || 0.45).toFixed(2)],
+    ["Stratégie vol basse", (r.strategyByVol || {}).low || "—"],
+    ["Stratégie vol moyenne", (r.strategyByVol || {}).mid || "—"],
+    ["Stratégie vol élevée", (r.strategyByVol || {}).high || "—"],
+  ].map(([k, v]) => `<tr><td>${k}</td><td style="font-weight:700">${v}</td></tr>`).join("");
+  const changes = (L.rule_changes || []).map((c) => `
+    <details class="acc"><summary>v${c.rule_set_version} — ${c.key}: ${c.before_value ?? "—"} → ${c.after_value ?? "—"}</summary>
+    <div class="body">${c.reason} <span style="color:var(--muted)">(${dstr(c.created_at)})</span></div></details>`).join("");
+  const bandTable = (bands) => `<table><thead><tr><th>Bande</th><th>N</th><th>PnL moyen</th><th>Frais moyens</th><th>Meilleure strat.</th></tr></thead>
+    <tbody>${(bands || []).map((b) => `<tr><td>${b.band}</td><td>${b.n}</td>
+      <td class="${sign(b.avgPnlPct)}">${fmtPct(b.avgPnlPct)}</td><td>${usd(b.avgFeesUsd, 2)}</td>
+      <td>${b.bestStrategy || "—"}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">Pas encore d'évidence.</td></tr>`}</tbody></table>`;
+  const rev = L.reviews || {};
+  $("#learning").innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px">
+      <div>
+        <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Règles courantes</h3>
+        <table>${rulesRows}</table>
+        ${r.reason ? `<div style="color:var(--muted);font-size:12px;margin-top:8px">Dernier réglage : ${r.reason}</div>` : ""}
+      </div>
+      <div>
+        <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Évidence — bandes fees/TVL (${rev.total || 0} reviews)</h3>
+        ${bandTable(rev.fee_bands)}
+      </div>
+      <div>
+        <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Évidence — bandes de volatilité</h3>
+        ${bandTable(rev.vol_bands)}
+      </div>
+    </div>
+    ${changes ? `<div style="margin-top:14px"><h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:4px">Historique des ajustements</h3>${changes}</div>` : ""}`;
 
   // Journal
   $("#evCount").textContent = (d.events || []).length;

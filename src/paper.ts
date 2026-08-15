@@ -5,6 +5,8 @@ import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchPool } from "./api.js";
 import { STRATEGY_PRESETS, binIdFromPrice } from "./strategies.js";
+import { getRules } from "./rules.js";
+import { reviewPositionOnClose } from "./review.js";
 import type { MarkResult, OpportunityScore, PaperPositionRow, StrategyName } from "./types.js";
 
 /** Prix d'un bin : base^binId avec base = 1 + bin_step/10000. */
@@ -263,7 +265,8 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
   // Rebalance : drift trop important → ré-ouvrir centré (friction 0.3%).
-  if (ev.drift > config.rebalanceThreshold) {
+  // Seuil dynamique : appris par le tuner (règles versionnées).
+  if (ev.drift > getRules().rebalanceThreshold) {
     rebalancePosition(pos.id, price, ev.valueY * yUsd);
   }
   // Claim : seuil de frais atteint → claim paper.
@@ -280,7 +283,7 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
 }
 
-/** Ferme une position (paper). */
+/** Ferme une position (paper) + review d'outcome immédiate. */
 export function closePosition(id: number, reason: string, detail = ""): void {
   const pos = getPosition(id);
   if (!pos) return;
@@ -291,6 +294,7 @@ export function closePosition(id: number, reason: string, detail = ""): void {
     positionId: id,
     poolAddress: pos.pool_address,
   });
+  reviewPositionOnClose({ ...pos, status: "closed", close_reason: reason, closed_at: Date.now() });
 }
 
 /** Recentre la position sur le bin actif (paper, avec friction). */

@@ -6,6 +6,8 @@ import path from "node:path";
 import { db } from "./db.js";
 import { config } from "./config.js";
 import { getPortfolioSummary, getOpenPositions } from "./paper.js";
+import { getRules, getRuleChanges } from "./rules.js";
+import { bucketStats } from "./tuner.js";
 
 export function exportData(): string {
   const dir = path.join(config.dataDir, "export");
@@ -118,6 +120,7 @@ export function exportData(): string {
       dashboard_started_at: now - Math.round(process.uptime() * 1000),
       monitor_interval_min: config.monitorIntervalMin,
     },
+    learning: buildLearningExport(),
     opportunities,
     positions,
     closed_positions: closedPositions,
@@ -136,4 +139,66 @@ function safeJson(s: string): unknown {
   } catch {
     return null;
   }
+}
+
+/** Données "apprentissage" : règles courantes, historique, buckets d'évidence. */
+function buildLearningExport() {
+  const rules = getRules();
+
+  const reviews = db
+    .prepare(
+      `SELECT fee_tvl_ratio_24h, vol_24h, strategy, net_pnl_pct, fees_usd, in_range_pct, review_type, reviewed_at
+       FROM outcome_reviews ORDER BY reviewed_at DESC LIMIT 500`
+    )
+    .all() as {
+    fee_tvl_ratio_24h: number | null;
+    vol_24h: number | null;
+    strategy: string;
+    net_pnl_pct: number;
+    fees_usd: number;
+    in_range_pct: number | null;
+    review_type: string;
+    reviewed_at: number;
+  }[];
+
+  const feeBands = bucketStats(
+    (r) => {
+      if (r.fee_tvl_ratio_24h === null) return "inconnu";
+      if (r.fee_tvl_ratio_24h < 0.05) return "bas (<5%)";
+      if (r.fee_tvl_ratio_24h < 0.2) return "moyen (5-20%)";
+      return "élevé (>20%)";
+    },
+    reviews
+  );
+  const volBands = bucketStats(
+    (r) => {
+      if (r.vol_24h === null) return "inconnu";
+      if (r.vol_24h < 0.1) return "bas (<10%)";
+      if (r.vol_24h < 0.3) return "moyen (10-30%)";
+      return "élevé (>30%)";
+    },
+    reviews
+  );
+
+  return {
+    rules: {
+      version: rules.version,
+      createdAt: rules.createdAt,
+      reason: rules.reason ?? null,
+      wApr: rules.wApr,
+      wVolStability: rules.wVolStability,
+      wTvl: rules.wTvl,
+      farmBonus: rules.farmBonus,
+      volPenalty: rules.volPenalty,
+      minFeeTvlRatio24h: rules.minFeeTvlRatio24h,
+      rebalanceThreshold: rules.rebalanceThreshold,
+      strategyByVol: rules.strategyByVol,
+    },
+    rule_changes: getRuleChanges(25),
+    reviews: {
+      total: reviews.length,
+      fee_bands: feeBands,
+      vol_bands: volBands,
+    },
+  };
 }

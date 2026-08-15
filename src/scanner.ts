@@ -4,7 +4,8 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, DEFAULT_STRATEGY } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice } from "./strategies.js";
+import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
 export interface ScanResult {
@@ -14,35 +15,40 @@ export interface ScanResult {
   opportunities: OpportunityScore[];
 }
 
-function passesFilters(p: Pool): { ok: boolean; reason: string } {
+function passesFilters(p: Pool, rules: RuleSet): { ok: boolean; reason: string } {
   if (p.is_blacklisted) return { ok: false, reason: "blacklisté" };
   if (p.tvl < config.minTvl) return { ok: false, reason: `TVL < ${config.minTvl}$` };
   if (p.volume_24h < config.minVolume24h)
     return { ok: false, reason: `vol 24h < ${config.minVolume24h}$` };
   if (p.pool_age_days < config.minPoolAgeDays)
     return { ok: false, reason: "pool trop récent" };
-  if (p.fee_tvl_ratio_24h < config.minFeeTvlRatio24h)
-    return { ok: false, reason: `fees/TVL 24h < ${config.minFeeTvlRatio24h}%` };
+  if (p.fee_tvl_ratio_24h < rules.minFeeTvlRatio24h)
+    return { ok: false, reason: `fees/TVL 24h < ${rules.minFeeTvlRatio24h}%` };
   if (!p.current_price || p.current_price <= 0) return { ok: false, reason: "prix absent" };
   return { ok: true, reason: "" };
 }
 
 /**
- * Score composite (0-100) :
+ * Score composite (0-100), pondérations issues des RÈGLES (apprises par le tuner) :
  * - log(fee_apr_24h) normalisé (les APR suivent une loi de puissance)
  * - stabilité du volume (volume_1h vs volume_24h/24)
  * - pénalité pour les pools très jeunes / sans launchpad connu
  */
-export function scorePool(p: Pool, vol24h: number): { score: number; signals: string[] } {
+export function scorePool(p: Pool, vol24h: number, rules: RuleSet): { score: number; signals: string[] } {
   const signals: string[] = [];
   const aprLog = Math.log10(1 + p.fee_apr_24h); // 1+ → APR 1000% ≈ 3.0
   const volStability = Math.min(1, p.volume_1h / Math.max(1, p.volume_24h / 24));
   const tvlScore = Math.min(1, Math.sqrt(p.tvl / 500_000));
-  const farmBonus = p.farm_apr > 10 ? 0.05 : 0;
-  const volPenalty = vol24h > 1.2 ? -0.1 : 0; // volatilité extrême
+  const farmBonus = p.farm_apr > 10 ? rules.farmBonus : 0;
+  const volPenalty = vol24h > 1.2 ? rules.volPenalty : 0; // volatilité extrême
 
   let score =
-    60 * Math.min(1, aprLog / 3) + 20 * volStability + 15 * tvlScore + 5 + farmBonus + volPenalty;
+    (rules.wApr / 100) * Math.min(1, aprLog / 3) * 100 +
+    (rules.wVolStability / 100) * volStability * 100 +
+    (rules.wTvl / 100) * tvlScore * 100 +
+    rules.wBase +
+    farmBonus * 100 +
+    volPenalty * 100;
   score = Math.max(0, Math.min(100, score));
 
   if (p.fee_apr_24h > 100) signals.push("APR fees 24h > 100%");
@@ -57,12 +63,13 @@ export function scorePool(p: Pool, vol24h: number): { score: number; signals: st
 
 export async function runScan(): Promise<ScanResult> {
   const scannedAt = Date.now();
+  const rules = getRules();
   const pools = await fetchTopPools(config.scanTopPools);
   const kept: Pool[] = [];
   const rejected: { pool: Pool; reason: string }[] = [];
 
   for (const p of pools) {
-    const f = passesFilters(p);
+    const f = passesFilters(p, rules);
     if (f.ok) kept.push(p);
     else rejected.push({ pool: p, reason: f.reason });
   }
@@ -74,9 +81,10 @@ export async function runScan(): Promise<ScanResult> {
     try {
       const candles = await fetchOhlcv(p.address, 24);
       const vol = realizedVolatility(candles);
-      const { score, signals } = scorePool(p, vol);
+      const { score, signals } = scorePool(p, vol, rules);
       const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
-      const hint = buildStrategyHint(p.address, activeBinId, vol, DEFAULT_STRATEGY);
+      const strategy = strategyForVolatility(vol, rules);
+      const hint = buildStrategyHint(p.address, activeBinId, vol, strategy);
       opportunities.push({ pool: p, vol_24h: vol, score, signals, strategyHint: hint });
     } catch (err) {
       logEvent("scan", `OHLCV échoué pour ${p.name}: ${String(err)}`, {

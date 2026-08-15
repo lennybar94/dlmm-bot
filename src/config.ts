@@ -53,6 +53,11 @@ export const config = {
   minClaimUsd: num("MIN_CLAIM_USD", 25),
   maxDailyDrop: num("MAX_DAILY_DROP", 0.4),
 
+  // Apprentissage (outcome reviews + tuner)
+  tuneMinSamples: num("TUNE_MIN_SAMPLES", 10),
+  tuneMinHoursBetween: num("TUNE_MIN_HOURS_BETWEEN", 24),
+  weeklyReviewDays: num("WEEKLY_REVIEW_DAYS", 7),
+
   // Dashboard
   dashboardPort: num("DASHBOARD_PORT", 4001),
   dashboardLive: bool("DASHBOARD_LIVE", true),
