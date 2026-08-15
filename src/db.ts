@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS pool_scans (
   vol_24h REAL,
   score REAL,
   signals TEXT,
-  strategy_hint TEXT
+  strategy_hint TEXT,
+  pool_age_days REAL,
+  created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pool_scans_addr ON pool_scans(pool_address, scanned_at);
 
@@ -161,6 +163,15 @@ CREATE TABLE IF NOT EXISTS rule_changes (
 `;
 
 db.exec(SCHEMA);
+
+// Migrations idempotentes (DB existantes créées avant l'ajout de colonnes)
+const poolScanCols = db.prepare("PRAGMA table_info(pool_scans)").all() as { name: string }[];
+if (!poolScanCols.some((c) => c.name === "pool_age_days")) {
+  db.exec("ALTER TABLE pool_scans ADD COLUMN pool_age_days REAL");
+}
+if (!poolScanCols.some((c) => c.name === "created_at")) {
+  db.exec("ALTER TABLE pool_scans ADD COLUMN created_at INTEGER");
+}
 
 export function setMeta(key: string, value: string): void {
   db.prepare(

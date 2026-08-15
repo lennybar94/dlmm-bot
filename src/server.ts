@@ -20,11 +20,13 @@ const MIME: Record<string, string> = {
 };
 
 export function startDashboard(): void {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     try {
       if (url.pathname === "/api/dashboard.json") {
-        const file = config.dashboardLive ? exportData() : path.join(config.dataDir, "export", "dashboard.json");
+        const file = config.dashboardLive
+          ? await exportData()
+          : path.join(config.dataDir, "export", "dashboard.json");
         const data = fs.readFileSync(file);
         res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
         res.end(data);

@@ -9,11 +9,47 @@ import { getPortfolioSummary, getOpenPositions } from "./paper.js";
 import { getRules, getRuleChanges } from "./rules.js";
 import { bucketStats } from "./tuner.js";
 
-export function exportData(): string {
+// --- Prix SOL/USD temps réel (API CoinGecko, cache 60 s, fallback stale) ---
+let solPriceCache: { price: number | null; fetchedAt: number } = { price: null, fetchedAt: 0 };
+// Jupiter /price/v2 renvoie 404 (endpoint changé, 2026-08) → CoinGecko (1 req/min max avec le cache).
+
+async function fetchSolPriceUsd(): Promise<number | null> {
+  try {
+    const res = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as { solana?: { usd?: number } };
+    const price = Number(data.solana?.usd);
+    return Number.isFinite(price) && price > 0 ? price : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Prix SOL/USD : frais si le cache a < 60 s, sinon stale (≤ 1 h), sinon null. */
+export async function getSolPriceUsd(): Promise<number | null> {
+  const now = Date.now();
+  if (solPriceCache.price !== null && now - solPriceCache.fetchedAt < 60_000) {
+    return solPriceCache.price;
+  }
+  const fresh = await fetchSolPriceUsd();
+  if (fresh !== null) {
+    solPriceCache = { price: fresh, fetchedAt: now };
+    return fresh;
+  }
+  if (solPriceCache.price !== null && now - solPriceCache.fetchedAt < 3_600_000) {
+    return solPriceCache.price; // stale toléré 1 h
+  }
+  return null;
+}
+
+export async function exportData(): Promise<string> {
   const dir = path.join(config.dataDir, "export");
   fs.mkdirSync(dir, { recursive: true });
   const now = Date.now();
-
+  const solPriceUsd = await getSolPriceUsd();
   const lastScan = db
     .prepare(
       `SELECT * FROM pool_scans WHERE scanned_at = (SELECT MAX(scanned_at) FROM pool_scans) ORDER BY score DESC`
@@ -113,6 +149,7 @@ export function exportData(): string {
   const payload = {
     generated_at: now,
     summary: getPortfolioSummary(),
+    sol_price_usd: solPriceUsd,
     last_activity: {
       last_scan_at: lastScanAt.m ?? null,
       last_mark_at: lastMarkAt.m ?? null,

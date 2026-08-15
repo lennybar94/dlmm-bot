@@ -66,6 +66,7 @@
   tr:hover td { background: #FFF7ED; }
   .sig { display: inline-block; font-size: 11px; background: #FFEDD5; color: var(--orange-dark); padding: 1px 8px; margin: 1px 4px 1px 0; border-radius: 99px; font-weight: 600; }
   .strat { font-size: 11px; background: var(--ink); color: #fff; padding: 1px 8px; border-radius: 3px; font-weight: 600; }
+  .sol { font-size: 11px; color: var(--muted); font-weight: 400; }
   .chart { padding: 16px; }
   canvas { width: 100%; height: 240px; display: block; }
   .events { padding: 8px 16px 16px; font-size: 13px; }
@@ -202,13 +203,17 @@ function updateStatus(d) {
 function render(d) {
   $("#meta").textContent = "MAJ " + dstr(d.generated_at) + " · " + timeAgo(d.generated_at);
   updateStatus(d);
+  const solPrice = d.sol_price_usd || null;
+  const sol = (usdVal, dec = 2) =>
+    solPrice && usdVal != null ? "≈ " + (usdVal / solPrice).toFixed(dec) + " SOL" : "";
   const s = d.summary;
+  const feesTotal = s.fees_earned_usd + s.fees_claimed_usd;
 
   const kpis = [
-    ["Valeur portefeuille", usd(s.value_usd, 0), s.open + " positions ouvertes"],
-    ["PnL net", usd(s.net_pnl_usd, 2), "valeur + frais − investi", sign(s.net_pnl_usd)],
-    ["Frais encaissés", usd(s.fees_earned_usd + s.fees_claimed_usd, 2), "dont claims " + usd(s.fees_claimed_usd, 2)],
-    ["Investi", usd(s.invested_usd, 0), s.rebalances + " rebalances"],
+    ["Valeur portefeuille", usd(s.value_usd, 0), s.open + " positions · " + sol(s.value_usd, 1)],
+    ["PnL net", usd(s.net_pnl_usd, 2), "valeur + frais − investi · " + sol(s.net_pnl_usd), sign(s.net_pnl_usd)],
+    ["Frais encaissés", usd(feesTotal, 2), "dont claims " + usd(s.fees_claimed_usd, 2) + " · " + sol(feesTotal)],
+    ["Investi", usd(s.invested_usd, 0), s.rebalances + " rebalances · " + sol(s.invested_usd, 1)],
   ];
   $("#kpis").innerHTML = kpis.map(([l, v, sub, cls]) =>
     `<div class="kpi"><div class="label">${l}</div><div class="value ${cls || ""}">${v}</div><div class="sub">${sub}</div></div>`
@@ -229,8 +234,8 @@ function render(d) {
       <td><strong>${p.name}</strong></td>
       <td><span class="strat">${p.strategy}</span></td>
       <td>${usd(p.deposit_usd)}</td>
-      <td>${usd(p.value_usd)}</td>
-      <td class="${sign(p.net_pnl)}">${usd(p.net_pnl, 2)}</td>
+      <td>${usd(p.value_usd)}<br><span class="sol">${sol(p.value_usd, 2)}</span></td>
+      <td class="${sign(p.net_pnl)}">${usd(p.net_pnl, 2)}<br><span class="sol">${sol(p.net_pnl)}</span></td>
       <td>${usd(p.fees, 2)}</td>
       <td class="${sign(p.il_usd)}">${usd(p.il_usd, 2)}</td>
       <td>${p.min_bin_id} … ${p.max_bin_id}</td>

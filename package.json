@@ -12,6 +12,7 @@
     "report:daily": "tsx scripts/report-daily.ts",
     "review:outcomes": "tsx scripts/review-outcomes.ts",
     "update:rules": "tsx scripts/update-rules.ts",
+    "close:all": "tsx scripts/close-all.ts",
     "export:data": "tsx scripts/export-data.ts",
     "dashboard": "tsx scripts/start-dashboard.ts",
     "typecheck": "tsc --noEmit"

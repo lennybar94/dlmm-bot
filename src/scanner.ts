@@ -81,6 +81,15 @@ export async function runScan(): Promise<ScanResult> {
     try {
       const candles = await fetchOhlcv(p.address, 24);
       const vol = realizedVolatility(candles);
+      // Plafond de volatilité : les pools à σ extrême encaissent des frais mais
+      // détruisent les petits gains en IL (leçon du jour 1 : Qenis-SOL σ 160%).
+      if (vol > config.maxVol24h) {
+        rejected.push({
+          pool: p,
+          reason: `volatilité ${(vol * 100).toFixed(0)}% > max ${(config.maxVol24h * 100).toFixed(0)}%`,
+        });
+        continue;
+      }
       const { score, signals } = scorePool(p, vol, rules);
       const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
       const strategy = strategyForVolatility(vol, rules);
@@ -100,8 +109,8 @@ export async function runScan(): Promise<ScanResult> {
     `INSERT INTO pool_scans (scanned_at, pool_address, name, token_x_symbol, token_y_symbol,
        tvl, volume_1h, volume_24h, fee_tvl_ratio_1h, fee_tvl_ratio_24h, fee_apr_24h, farm_apr,
        base_fee_pct, dynamic_fee_pct, bin_step, launchpad, is_blacklisted, current_price,
-       vol_24h, score, signals, strategy_hint)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       vol_24h, score, signals, strategy_hint, pool_age_days, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertSignal = db.prepare(
     `INSERT INTO signals (created_at, pool_address, name, score, fee_apr_24h, tvl, volume_24h, signal_type, message)
@@ -132,7 +141,9 @@ export async function runScan(): Promise<ScanResult> {
       opp.vol_24h,
       opp.score,
       JSON.stringify(opp.signals),
-      JSON.stringify(opp.strategyHint)
+      JSON.stringify(opp.strategyHint),
+      p.pool_age_days,
+      p.created_at
     );
     for (const sig of opp.signals) {
       insertSignal.run(Date.now(), p.address, p.name, opp.score, p.fee_apr_24h, p.tvl, p.volume_24h, sig);
@@ -161,7 +172,9 @@ export async function runScan(): Promise<ScanResult> {
       0,
       0,
       "[]",
-      "{}"
+      "{}",
+      r.pool.pool_age_days,
+      r.pool.created_at
     );
   }
 
