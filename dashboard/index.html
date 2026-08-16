@@ -249,10 +249,12 @@ function render(d) {
   $("#opps").innerHTML = (d.opportunities || []).map((o) => {
     const h = o.strategy_hint || {};
     const isQuick = h.strategy === "quick-inout";
+    const isFeePrinter = (o.signals || []).some((x) => x.includes("fee printer"));
     const sigs = (o.signals || []).map((x) => `<span class="sig">${x}</span>`).join("");
     return `<details class="acc">
       <summary><span style="min-width:52px">${o.score.toFixed(1)}</span> ${o.name}
         ${isQuick ? '<span class="sig" style="background:var(--accent);color:#fff">⚡ quick in & out</span>' : ""}
+        ${isFeePrinter ? '<span class="sig" style="background:#16a34a;color:#fff">🖨️ fee printer</span>' : ""}
         <span class="strat">${h.strategy || "—"}</span>
         <span style="margin-left:auto;color:var(--muted);font-weight:400;font-size:12px">APR ${pct(o.fee_apr_24h, 0)} · TVL ${fmt(o.tvl / 1e6, 1)}M$</span></summary>
       <div class="body">

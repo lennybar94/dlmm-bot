@@ -95,6 +95,16 @@ export const config = {
   quickMinFeeTvlRatio30m: num("QUICK_MIN_FEE_TVL_30M", 0.02), // % fees/TVL sur 30m (frais qui tournent)
   quickVolumeFadeFactor: num("QUICK_VOLUME_FADE_FACTOR", 0.5), // sortie si vol 30m < 50% du seuil
 
+  // Playbook fee printers (0xmiir, 2026-08-16) : les meilleurs encaisseurs de
+  // frais du marché (ANSEM/MANLET/TOAD/CATE) font 0.5-2.5% de fees/TVL 24h avec
+  // une volatilité extrême — le plafond σ (60%/j, antérieur au playbook
+  // bidask-dip) les EXCLUAIT du scan. Un pool à gros volume + gros ratio de
+  // frais passe le plafond : l'échelle anti-dump + le filtre drawdown ≥ 30%
+  // (entrée sur rebond) sont les protections.
+  minFeeTvlFeePrinter: num("MIN_FEE_TVL_FEEPRINTER", 0.5), // % fees/TVL 24h min
+  watchlistTokens: str("WATCHLIST_TOKENS", "ANSEM,MANLET,TOAD,CATE"), // watchlist 0xmiir
+  migrationMinVolume24h: num("MIGRATION_MIN_VOLUME_24H", 5_000_000), // « 5M+ volume sur le DLMM » (0xmiir)
+
   // Apprentissage (outcome reviews + tuner)
   tuneMinSamples: num("TUNE_MIN_SAMPLES", 10),
   tuneMinHoursBetween: num("TUNE_MIN_HOURS_BETWEEN", 24),

@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isFeePrinterCandidate, isWatchlisted } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -71,6 +71,17 @@ export function scorePool(p: Pool, vol24h: number, rules: RuleSet): { score: num
     signals.push(`⚡ quick in & out (Tikz) : vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$ (≥30K$/min)`);
   if (isQuickInOutCandidate(p))
     signals.push(`pool récent (${p.pool_age_days.toFixed(1)} j) + spike — edge « nouveau pool » (Tikz)`);
+  // Playbook fee printers (0xmiir) : les tokens nommés (watchlist) sont les
+  // meilleurs encaisseurs de frais du marché — badge visible.
+  if (isWatchlisted(p.token_x.symbol))
+    signals.push(`🖨️ fee printer watchlist (0xmiir) : ${p.token_x.symbol} — fees/TVL 24h ${p.fee_tvl_ratio_24h.toFixed(2)}%`);
+  // « Les fees trouvent leur chemin » (0xmiir) : tokens lancés ailleurs (ex.
+  // pump.fun) qui font un volume majeur sur le DLMM Meteora — le volume migre
+  // vers le pool de frais.
+  if (p.volume_24h >= config.migrationMinVolume24h)
+    signals.push(
+      `volume migré : ${(p.volume_24h / 1e6).toFixed(1)}M$/24h sur le DLMM${p.launchpad ? ` (lancé ${p.launchpad})` : " (lancé ailleurs)"} — 0xmiir`
+    );
   // Insight LP Army : gros bin step = couverture de dump large + fees dynamiques
   // qui s'envolent sur gros volume. Couverture typée par profil de token.
   if (p.bin_step >= 100) {
@@ -106,7 +117,13 @@ export async function runScan(): Promise<ScanResult> {
       // position SERRÉE de quelques minutes — la protection EST l'exit
       // « OOR → pull » + « volume fade ». On ne lui applique pas le plafond σ.
       const quick = isQuickInOutCandidate(p);
-      if (!quick && vol > config.maxVol24h) {
+      // Candidat fee printer (0xmiir) : gros volume + gros fees/TVL 24h — les
+      // meilleurs encaisseurs de frais (ANSEM/MANLET/TOAD/CATE) ont une σ
+      // extrême (80-200%/j) et étaient EXCLUS par le plafond (antérieur au
+      // playbook bidask-dip). L'échelle anti-dump + le filtre drawdown ≥ 30%
+      // (entrée sur rebond) sont les protections.
+      const feePrinter = isFeePrinterCandidate(p);
+      if (!quick && !feePrinter && vol > config.maxVol24h) {
         rejected.push({
           pool: p,
           reason: `volatilité ${(vol * 100).toFixed(0)}% > max ${(config.maxVol24h * 100).toFixed(0)}%`,

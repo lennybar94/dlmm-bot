@@ -75,6 +75,31 @@ export const DEFAULT_STRATEGY = "spot-spread";
 export const DIP_DEFAULT_TARGET = 0.75; // couverture de dump par défaut (75%)
 
 /**
+ * Candidat « fee printer » (playbook 0xmiir) : gros volume 24h ET gros ratio de
+ * frais (fees/TVL 24h ≥ seuil). Ces pools sont les meilleurs encaisseurs de
+ * frais du marché malgré une volatilité extrême — ils passent le plafond σ du
+ * scan (l'échelle bidask-dip + le filtre drawdown sont les protections).
+ */
+export function isFeePrinterCandidate(p: {
+  volume_24h: number;
+  fee_tvl_ratio_24h: number;
+}): boolean {
+  return (
+    p.volume_24h >= config.minVolume24hBidask &&
+    p.fee_tvl_ratio_24h >= config.minFeeTvlFeePrinter
+  );
+}
+
+/** Token suivi en watchlist (playbook 0xmiir — les « fee printers » nommés). */
+export function isWatchlisted(symbol: string | undefined): boolean {
+  if (!symbol) return false;
+  return config.watchlistTokens
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .includes(symbol.toUpperCase());
+}
+
+/**
  * Candidat « quick in & out » (playbook Tikz1070) : spike de volume 30 min
  * ≥ 30K$/min sur un pool RÉCENT (≤ QUICK_MAX_POOL_AGE_DAYS) avec des frais qui
  * tournent (fees/TVL 30m ≥ seuil). C'est la porte d'entrée du playbook — ces
