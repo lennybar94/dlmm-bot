@@ -11,10 +11,13 @@ export interface PoolMetrics {
   tvl: number;
   volume_24h: number;
   volume_1h: number;
+  volume_30m: number;
   fee_tvl_ratio_24h: number; // en POURCENTAGE (2.5 = 2.5% de frais/TVL sur 24h)
   fee_tvl_ratio_1h: number;
+  fee_tvl_ratio_30m: number;
   fees_24h: number;
   fees_1h: number;
+  fees_30m: number;
   fee_apr_24h: number; // annualisé, dérivé
   farm_apr: number;
   current_price: number;
@@ -52,7 +55,8 @@ export type StrategyName =
   | "spot-wide"
   | "curve"
   | "bidask"
-  | "bidask-dip";
+  | "bidask-dip"
+  | "quick-inout";
 
 export interface StrategyPreset {
   name: StrategyName;
@@ -69,6 +73,8 @@ export interface StrategyHint {
   maxBinId: number;
   binsPerSide: number;
   vol_24h: number; // volatilité réalisée journalière (0.12 = 12%)
+  dipTarget?: number; // couverture de dump cible pour bidask-dip (0.9 = -90%)
+  drawdown24h?: number; // drawdown vs high 24h à l'entrée (0.35 = -35% sous le high)
 }
 
 export interface OpportunityScore {

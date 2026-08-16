@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -17,10 +17,16 @@ export interface ScanResult {
 
 function passesFilters(p: Pool, rules: RuleSet): { ok: boolean; reason: string } {
   if (p.is_blacklisted) return { ok: false, reason: "blacklisté" };
-  if (p.tvl < config.minTvl) return { ok: false, reason: `TVL < ${config.minTvl}$` };
+  // Playbook quick in & out (Tikz1070) : la porte d'entrée EST le spike 30m —
+  // un pool récent/à petit TVL avec ≥ 30K$/min de volume + frais qui tournent
+  // est EXACTEMENT la cible (nouveau pool, détection tôt). Ces candidats
+  // passent les filtres d'âge et de TVL.
+  const quick = isQuickInOutCandidate(p);
+  if (p.tvl < config.minTvl && !quick)
+    return { ok: false, reason: `TVL < ${config.minTvl}$` };
   if (p.volume_24h < config.minVolume24h)
     return { ok: false, reason: `vol 24h < ${config.minVolume24h}$` };
-  if (p.pool_age_days < config.minPoolAgeDays)
+  if (p.pool_age_days < config.minPoolAgeDays && !quick)
     return { ok: false, reason: "pool trop récent" };
   if (p.fee_tvl_ratio_24h < rules.minFeeTvlRatio24h)
     return { ok: false, reason: `fees/TVL 24h < ${rules.minFeeTvlRatio24h}%` };
@@ -59,9 +65,18 @@ export function scorePool(p: Pool, vol24h: number, rules: RuleSet): { score: num
   if (vol24h > 0.5) signals.push(`volatilité élevée (${(vol24h * 100).toFixed(0)}%/j)`);
   // Playbook quick in & out (LP Army) : volume ≥ 30k$/min ≈ ≥ 900k$/30min
   if (p.volume_1h >= 900_000) signals.push("volume burst (≥30k$/min sur 1h)");
-  // Insight LP Army : gros bin step = couverture de dump large (200 bp ≈ -75%
-  // en ~70 bins) + fees dynamiques qui s'envolent sur gros volume
-  if (p.bin_step >= 100) signals.push(`bin step large (${p.bin_step} bp — couverture dump -75% en ~${Math.round(Math.log(0.25) / Math.log(1 + p.bin_step / 10000))} bins)`);
+  // Playbook quick in & out (Tikz1070) : mesure 30 MIN exacte (l'API l'expose)
+  // — spike ≥ 30K$/min sur la fenêtre de trading réelle du playbook.
+  if (p.volume_30m >= config.quickMinVolume30m)
+    signals.push(`⚡ quick in & out (Tikz) : vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$ (≥30K$/min)`);
+  if (isQuickInOutCandidate(p))
+    signals.push(`pool récent (${p.pool_age_days.toFixed(1)} j) + spike — edge « nouveau pool » (Tikz)`);
+  // Insight LP Army : gros bin step = couverture de dump large + fees dynamiques
+  // qui s'envolent sur gros volume. Couverture typée par profil de token.
+  if (p.bin_step >= 100) {
+    const t = dipTargetForPool(p);
+    signals.push(`bin step large (${p.bin_step} bp — couverture dump -${Math.round(t * 100)}% en ~${binsForDumpTarget(t, p.bin_step)} bins)`);
+  }
   if (score >= 55) signals.push("top opportunité");
   return { score, signals };
 }
@@ -86,9 +101,12 @@ export async function runScan(): Promise<ScanResult> {
     try {
       const candles = await fetchOhlcv(p.address, 24);
       const vol = realizedVolatility(candles);
-      // Plafond de volatilité : les pools à σ extrême encaissent des frais mais
-      // détruisent les petits gains en IL (leçon du jour 1 : Qenis-SOL σ 160%).
-      if (vol > config.maxVol24h) {
+      // Candidat quick in & out (Tikz1070) : pool récent en spike de volume.
+      // La volatilité journalière extrême de ces pools ne s'applique pas à une
+      // position SERRÉE de quelques minutes — la protection EST l'exit
+      // « OOR → pull » + « volume fade ». On ne lui applique pas le plafond σ.
+      const quick = isQuickInOutCandidate(p);
+      if (!quick && vol > config.maxVol24h) {
         rejected.push({
           pool: p,
           reason: `volatilité ${(vol * 100).toFixed(0)}% > max ${(config.maxVol24h * 100).toFixed(0)}%`,
@@ -97,8 +115,36 @@ export async function runScan(): Promise<ScanResult> {
       }
       const { score, signals } = scorePool(p, vol, rules);
       const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
-      const strategy = strategyForVolatility(vol, rules);
-      const hint = buildStrategyHint(p.address, activeBinId, vol, strategy);
+      let strategy = strategyForVolatility(vol, rules);
+      // Override playbook Tikz : le spike 30m sur pool récent prime sur la
+      // stratégie par volatilité — on ouvre SERRÉ et on sort vite.
+      if (quick) strategy = "quick-inout";
+      const drawdown = drawdownFromHigh(candles, p.current_price);
+      // Filtres bidask-dip (playbook Tiagogo) :
+      // D — volume min : l'échelle anti-dump compte sur les frais dynamiques
+      // des gros volumes ("volume 24h > 1-2M minimum"). Pool à petit volume =
+      // capital immobilisé sans frais → on passe.
+      if (strategy === "bidask-dip" && p.volume_24h < config.minVolume24hBidask) {
+        rejected.push({
+          pool: p,
+          reason: `vol 24h ${(p.volume_24h / 1000).toFixed(0)}k$ < ${(config.minVolume24hBidask / 1000).toFixed(0)}k$ (bidask-dip)`,
+        });
+        continue;
+      }
+      // E — entrée sur rebond : on n'ouvre l'échelle anti-dump qu'après un dump
+      // déjà significatif ("rentrer sur les rebonds après les gros dumps").
+      if (strategy === "bidask-dip" && drawdown < config.minDipDrawdown) {
+        rejected.push({
+          pool: p,
+          reason: `pas de rebond : drawdown ${(drawdown * 100).toFixed(0)}% < ${(config.minDipDrawdown * 100).toFixed(0)}% (bidask-dip)`,
+        });
+        continue;
+      }
+      if (strategy === "bidask-dip" && drawdown >= config.minDipDrawdown) {
+        signals.push(`rebond après dump (drawdown ${(drawdown * 100).toFixed(0)}% vs high 24h)`);
+      }
+      const hint = buildStrategyHint(p, activeBinId, vol, strategy);
+      if (hint.dipTarget !== undefined) hint.drawdown24h = drawdown;
       opportunities.push({ pool: p, vol_24h: vol, score, signals, strategyHint: hint });
     } catch (err) {
       logEvent("scan", `OHLCV échoué pour ${p.name}: ${String(err)}`, {
@@ -112,10 +158,10 @@ export async function runScan(): Promise<ScanResult> {
 
   const insertPool = db.prepare(
     `INSERT INTO pool_scans (scanned_at, pool_address, name, token_x_symbol, token_y_symbol,
-       tvl, volume_1h, volume_24h, fee_tvl_ratio_1h, fee_tvl_ratio_24h, fee_apr_24h, farm_apr,
+       tvl, volume_1h, volume_30m, volume_24h, fee_tvl_ratio_1h, fee_tvl_ratio_30m, fee_tvl_ratio_24h, fee_apr_24h, farm_apr,
        base_fee_pct, dynamic_fee_pct, bin_step, launchpad, is_blacklisted, current_price,
        vol_24h, score, signals, strategy_hint, pool_age_days, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertSignal = db.prepare(
     `INSERT INTO signals (created_at, pool_address, name, score, fee_apr_24h, tvl, volume_24h, signal_type, message)
@@ -132,8 +178,10 @@ export async function runScan(): Promise<ScanResult> {
       p.token_y.symbol,
       p.tvl,
       p.volume_1h,
+      p.volume_30m,
       p.volume_24h,
       p.fee_tvl_ratio_1h,
+      p.fee_tvl_ratio_30m,
       p.fee_tvl_ratio_24h,
       p.fee_apr_24h,
       p.farm_apr,
@@ -163,8 +211,10 @@ export async function runScan(): Promise<ScanResult> {
       r.pool.token_y.symbol,
       r.pool.tvl,
       r.pool.volume_1h,
+      r.pool.volume_30m,
       r.pool.volume_24h,
       r.pool.fee_tvl_ratio_1h,
+      r.pool.fee_tvl_ratio_30m,
       r.pool.fee_tvl_ratio_24h,
       r.pool.fee_apr_24h,
       r.pool.farm_apr,
@@ -176,7 +226,7 @@ export async function runScan(): Promise<ScanResult> {
       r.pool.current_price,
       0,
       0,
-      "[]",
+      JSON.stringify([`rejeté: ${r.reason}`]),
       "{}",
       r.pool.pool_age_days,
       r.pool.created_at

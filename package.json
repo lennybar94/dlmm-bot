@@ -15,7 +15,10 @@
     "close:all": "tsx scripts/close-all.ts",
     "export:data": "tsx scripts/export-data.ts",
     "dashboard": "tsx scripts/start-dashboard.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dca:daily": "tsx scripts/dca-daily.ts",
+    "notify:events": "tsx scripts/notify-events.ts",
+    "notify:report": "tsx scripts/notify-report.ts"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "^1.4.1",

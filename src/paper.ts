@@ -126,8 +126,8 @@ export function openPaperPosition(opp: OpportunityScore, depositUsd = config.dep
   const entryPrice = p.current_price;
 
   const activeBinId = binIdFromPrice(entryPrice, p.bin_step);
-  const minBinId = hint.minBinId || activeBinId - 10;
-  const maxBinId = hint.maxBinId || activeBinId + 10;
+  const minBinId = hint.minBinId ?? activeBinId - 10;
+  const maxBinId = hint.maxBinId ?? activeBinId + 10;
   const depositY = depositUsd / yUsd;
   const liq = buildLiquidity({
     depositY,
@@ -225,6 +225,19 @@ export function evaluatePosition(pos: PaperPositionRow, price: number): Position
   return { valueY, holdY, ilY, inRange, drift };
 }
 
+/** Série des prix des derniers marks (bougies ~15 min, monitor) — pour Bollinger. */
+function recentMarkPrices(positionId: number, n: number): number[] {
+  const rows = db
+    .prepare(
+      `SELECT price FROM pnl_snapshots WHERE position_id = ? AND taken_at < ? ORDER BY taken_at DESC LIMIT ?`
+    )
+    .all(positionId, Date.now(), n) as { price: number | null }[];
+  return rows
+    .map((r) => r.price)
+    .filter((p): p is number => typeof p === "number" && p > 0)
+    .reverse();
+}
+
 /** Mark-to-market : valeur, frais simulés, IL, triggers (stop, rebalance). */
 export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   const pool = await fetchPool(pos.pool_address);
@@ -258,6 +271,7 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
 
   // --- Triggers ---
   const isDip = pos.strategy === "bidask-dip";
+  const isQuick = pos.strategy === "quick-inout";
   // Hard stop : chute > maxDailyDrop entre le prix de début de journée et maintenant.
   // bidask-dip : l'échelle EST le stop (achat de la chute jusqu'à -75%) → stop
   // élargi à -85% (protection rug seulement), pas de stop quotidien.
@@ -268,19 +282,71 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
     closePosition(pos.id, "hard-stop", `Chute de ${(dayDrop * 100).toFixed(1)}% depuis le début de journée`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
+  // Playbook quick in & out (Tikz1070) : « fast in and fast out ». Si le spike
+  // de volume s'essouffle (vol 30m < 50% du seuil d'entrée), on sort — les fees
+  // du spike sont déjà encaissées, la suite n'est plus le jeu de Tikz
+  // (« small clean fees, no drama »).
+  if (isQuick && pool.volume_30m < config.quickMinVolume30m * config.quickVolumeFadeFactor) {
+    closePosition(
+      pos.id,
+      "quick-out-volume-fade",
+      `vol 30m ${(pool.volume_30m / 1000).toFixed(0)}k$ < ${((config.quickMinVolume30m * config.quickVolumeFadeFactor) / 1000).toFixed(0)}k$ (spike essoufflé)`
+    );
+    return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+  }
   // Rebalance : drift trop important → ré-ouvrir centré (friction 0.3%).
   // Seuil dynamique : appris par le tuner (règles versionnées).
   // bidask-dip : JAMAIS de rebalance (range volontairement unidirectionnel —
   // le recentrage détruirait l'échelle anti-dump).
-  if (!isDip && ev.drift > getRules().rebalanceThreshold) {
+  // quick-inout : range volontairement SERRÉ (1-3 bins) — pas de rebalance non
+  // plus ; on PULL la liquidité dès que le prix sort du range (Tikz :
+  // « i like pulling my liquidity in that situation, either reduces IL or sets
+  // up a BA flip » — salarycat : pull → re-entry plus bas).
+  if (isQuick) {
+    if (!ev.inRange) {
+      closePosition(
+        pos.id,
+        "quick-out-oor-pull",
+        `prix ${price.toPrecision(6)} hors range [${pos.min_bin_id}..${pos.max_bin_id}] — pull (style Tikz)`
+      );
+      return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+    }
+  } else if (!isDip && ev.drift > getRules().rebalanceThreshold) {
     rebalancePosition(pos.id, price, ev.valueY * yUsd);
   }
-  // Exit "quand c'est vert" (playbook LP Army) : si la position était sous
-  // l'eau au mark précédent et revient à ≥ dépôt → on réalise. S'applique
-  // aux échelles anti-dump qui ont attrapé le rebond.
-  if (isDip && (pos.last_value_usd ?? 0) < pos.deposit_usd && valueUsd >= pos.deposit_usd) {
-    closePosition(pos.id, "recovery-exit", `Retour à l'équilibre après être passé sous l'eau (${valueUsd.toFixed(2)}$ ≥ ${pos.deposit_usd}$)`);
+  // Exit "quand c'est vert" (playbook LP Army / Djedje20x) : on sort dès que le
+  // PnL net redevient ≥ 0, fees INCLUSES — "sortir en gain au moindre rebond
+  // grâce aux fees accumulés" (value + fees ≥ dépôt, même si value seule est
+  // encore sous l'eau). S'applique aux échelles anti-dump qui ont attrapé le
+  // rebond. Condition "sous l'eau au mark précédent" (fees incluses) pour ne
+  // pas sortir à l'ouverture.
+  const prevNetUnderwater = (pos.last_value_usd ?? 0) + (pos.fees_earned_usd ?? 0) + (pos.fees_claimed_usd ?? 0) < pos.deposit_usd;
+  if (isDip && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd) {
+    closePosition(pos.id, "recovery-exit", `PnL net ≥ 0 au rebond : value ${valueUsd.toFixed(2)}$ + fees ${fees.toFixed(2)}$ ≥ ${pos.deposit_usd}$ (fees incluses)`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+  }
+  // Exit Bollinger (Tiagogo : cassure de la Bollinger haute en 15 min → sortie,
+  // "vert, rouge, peu importe"). Bougies ~15 min reconstruites depuis les marks
+  // du bot (monitor 15 min) : on sort quand le prix casse mean + k·σ — le pump
+  // est épuisé, on vend le rebond même si la position n'est pas revenue à
+  // l'équilibre (protège aussi contre le retournement).
+  if (isDip && config.bollingerExitEnabled) {
+    const prices = recentMarkPrices(pos.id, config.bollingerPeriod);
+    if (prices.length >= config.bollingerMinSamples) {
+      const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
+      const variance =
+        prices.reduce((a, b) => a + (b - mean) ** 2, 0) / prices.length;
+      const std = Math.sqrt(variance);
+      const upper = mean + config.bollingerStd * std;
+      if (std > 0 && price > upper) {
+        closePosition(
+          pos.id,
+          "bollinger-exit",
+          `Prix ${price.toPrecision(6)} > bande haute ${upper.toPrecision(6)} (mean ${mean.toPrecision(6)} + ${config.bollingerStd}σ sur ${prices.length} marks)`
+        );
+        return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+      }
+    }
   }
   // Claim : seuil de frais atteint → claim paper.
   if (fees >= config.minClaimUsd) {
@@ -333,6 +399,40 @@ export function rebalancePosition(id: number, price: number, valueUsd: number): 
   );
 }
 
+/** Ajoute du quote (SOL) à une position bidask-dip ouverte — DCA quotidien
+ * (playbook Djedje20x : "acheter en DCA 1×/jour et ajouter à la pool en y
+ * mettant du $SOL, auto-fill activé"). L'échelle grossit, les fees aussi. */
+export function dcaPosition(id: number, usdAmount: number): { addedUsd: number; addedY: number } | null {
+  const pos = getPosition(id);
+  if (!pos) return null;
+  if (pos.status !== "open") return null;
+  if (usdAmount <= 0) return null;
+  // Prix du quote (Y) en USD dérivé du dépôt : deposit_usd / amount_y.
+  const yUsd = pos.amount_y > 0 ? pos.deposit_usd / pos.amount_y : 0;
+  if (!(yUsd > 0)) return null;
+  const addedY = usdAmount / yUsd;
+  db.prepare(
+    `UPDATE paper_positions SET deposit_usd = deposit_usd + ?, amount_y = amount_y + ?
+     WHERE id = ?`
+  ).run(usdAmount, addedY, id);
+  logEvent("dca", `DCA paper sur ${pos.name} : +${usdAmount.toFixed(2)}$ de ${pos.token_y_symbol} (échelle élargie, auto-fill)`, {
+    positionId: id,
+    poolAddress: pos.pool_address,
+  });
+  return { addedUsd: usdAmount, addedY };
+}
+
+/** DCA quotidien sur toutes les positions bidask-dip ouvertes. */
+export function dcaAllOpen(): { positionId: number; addedUsd: number }[] {
+  const out: { positionId: number; addedUsd: number }[] = [];
+  for (const pos of getOpenPositions()) {
+    if (pos.strategy !== "bidask-dip") continue;
+    const r = dcaPosition(pos.id, config.dcaDailyUsd);
+    if (r) out.push({ positionId: pos.id, addedUsd: r.addedUsd });
+  }
+  return out;
+}
+
 /** Mark-to-market de toutes les positions ouvertes. */
 export async function markAll(): Promise<{ id: number; result: MarkResult }[]> {
   const results: { id: number; result: MarkResult }[] = [];
@@ -360,7 +460,7 @@ export function getPortfolioSummary(): {
 } {
   const row = db
     .prepare(
-      `SELECT COUNT(*) as open,
+      `SELECT COUNT(CASE WHEN status='open' THEN 1 END) as open,
               COALESCE(SUM(CASE WHEN status='open' THEN deposit_usd END),0) as invested,
               COALESCE(SUM(CASE WHEN status='open' THEN last_value_usd END),0) as value,
               COALESCE(SUM(fees_earned_usd),0) as fees,

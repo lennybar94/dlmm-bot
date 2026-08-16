@@ -76,10 +76,13 @@ export function normalizePool(raw: RawPool): Pool {
   const cfg = raw.pool_config ?? {};
   const feeTvlRatio24h = numOr(raw.fee_tvl_ratio?.["24h"]);
   const feeTvlRatio1h = numOr(raw.fee_tvl_ratio?.["1h"]);
+  const feeTvlRatio30m = numOr(raw.fee_tvl_ratio?.["30m"]);
   const volume24h = numOr(raw.volume?.["24h"]);
   const volume1h = numOr(raw.volume?.["1h"]);
+  const volume30m = numOr(raw.volume?.["30m"]);
   const fees24h = numOr(raw.fees?.["24h"]);
   const fees1h = numOr(raw.fees?.["1h"]);
+  const fees30m = numOr(raw.fees?.["30m"]);
   const protocolFeePct = numOr(cfg.protocol_fee_pct, 10);
   // fee_tvl_ratio est en POURCENTAGE (2.5 = 2.5%) → APR = ratio/100 × 365
   const feeApr24h =
@@ -93,10 +96,13 @@ export function normalizePool(raw: RawPool): Pool {
     tvl: numOr(raw.tvl),
     volume_24h: volume24h,
     volume_1h: volume1h,
+    volume_30m: volume30m,
     fee_tvl_ratio_24h: feeTvlRatio24h,
     fee_tvl_ratio_1h: feeTvlRatio1h,
+    fee_tvl_ratio_30m: feeTvlRatio30m,
     fees_24h: fees24h,
     fees_1h: fees1h,
+    fees_30m: fees30m,
     fee_apr_24h: feeApr24h,
     farm_apr: numOr(raw.farm_apr),
     current_price: numOr(raw.current_price),

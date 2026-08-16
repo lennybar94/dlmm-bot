@@ -65,8 +65,12 @@ export async function exportData(): Promise<string> {
       tvl: r.tvl,
       volume_24h: r.volume_24h,
       volume_1h: r.volume_1h,
+      volume_30m: r.volume_30m,
       fee_apr_24h: r.fee_apr_24h,
       fee_tvl_ratio_24h: r.fee_tvl_ratio_24h,
+      fee_tvl_ratio_30m: r.fee_tvl_ratio_30m,
+      dynamic_fee_pct: r.dynamic_fee_pct,
+      pool_age_days: r.pool_age_days,
       bin_step: r.bin_step,
       current_price: r.current_price,
       vol_24h: r.vol_24h,
@@ -75,22 +79,30 @@ export async function exportData(): Promise<string> {
       strategy_hint: safeJson(r.strategy_hint as string),
     }));
 
-  const positions = getOpenPositions().map((p) => ({
-    id: p.id,
-    opened_at: p.opened_at,
-    pool_address: p.pool_address,
-    name: p.name,
-    strategy: p.strategy,
-    deposit_usd: p.deposit_usd,
-    value_usd: p.last_value_usd,
-    fees: (p.fees_earned_usd ?? 0) + (p.fees_claimed_usd ?? 0),
-    il_usd: p.last_il_usd,
-    net_pnl: p.last_value_usd - p.deposit_usd + p.fees_earned_usd + p.fees_claimed_usd,
-    min_bin_id: p.min_bin_id,
-    max_bin_id: p.max_bin_id,
-    entry_price: p.entry_price,
-    rebalance_count: p.rebalance_count,
-  }));
+  const positions = getOpenPositions().map((p) => {
+    const fees = (p.fees_earned_usd ?? 0) + (p.fees_claimed_usd ?? 0);
+    const daysOpen = Math.max(0.1, (now - p.opened_at) / 86_400_000);
+    // KPI "fees %/jour" (benchmark Djedje20x : 1.03% daily) : rendement quotidien
+    // moyen en frais sur le dépôt, depuis l'ouverture.
+    const feesPctDay = p.deposit_usd > 0 ? (fees / p.deposit_usd / daysOpen) * 100 : 0;
+    return {
+      id: p.id,
+      opened_at: p.opened_at,
+      pool_address: p.pool_address,
+      name: p.name,
+      strategy: p.strategy,
+      deposit_usd: p.deposit_usd,
+      value_usd: p.last_value_usd,
+      fees,
+      fees_pct_day: feesPctDay,
+      il_usd: p.last_il_usd,
+      net_pnl: p.last_value_usd - p.deposit_usd + fees,
+      min_bin_id: p.min_bin_id,
+      max_bin_id: p.max_bin_id,
+      entry_price: p.entry_price,
+      rebalance_count: p.rebalance_count,
+    };
+  });
 
   const closedPositions = (db
     .prepare(

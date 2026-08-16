@@ -3,8 +3,9 @@
 import { db } from "./db.js";
 import { getPortfolioSummary, getOpenPositions } from "./paper.js";
 import { getRules, getRuleChanges } from "./rules.js";
+import { getSolPriceUsd } from "./export.js";
 
-export function buildDailyReport(): string {
+export async function buildDailyReport(): Promise<string> {
   const s = getPortfolioSummary();
   const lines: string[] = [];
   const now = new Date();
@@ -17,6 +18,12 @@ export function buildDailyReport(): string {
   lines.push(`  PnL net (valeur + frais − investi) : ${s.netPnlUsd >= 0 ? "+" : ""}${s.netPnlUsd.toFixed(2)}$`);
   lines.push(`  Frais encaissés (cumul) : ${(s.feesEarnedUsd + s.feesClaimedUsd).toFixed(2)}$ (dont claims ${s.feesClaimedUsd.toFixed(2)}$)`);
   lines.push(`  Rebalances : ${s.rebalances}`);
+  // PnL en SOL (benchmark CTT_Dev : 2 SOL → 4.94 SOL en 3 semaines).
+  const solUsd = await getSolPriceUsd();
+  if (solUsd && solUsd > 0) {
+    lines.push(`  PnL net en SOL : ${s.netPnlUsd >= 0 ? "+" : ""}${(s.netPnlUsd / solUsd).toFixed(3)} SOL (prix SOL ${solUsd.toFixed(2)}$)`);
+    lines.push(`  Dépôt total en SOL : ${(s.investedUsd / solUsd).toFixed(2)} SOL → valeur ${(s.valueUsd / solUsd).toFixed(2)} SOL`);
+  }
   lines.push("");
 
   // Statut du bot (fraîcheur de l'activité réelle)

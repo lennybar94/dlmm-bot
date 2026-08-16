@@ -24,8 +24,10 @@ CREATE TABLE IF NOT EXISTS pool_scans (
   token_y_symbol TEXT,
   tvl REAL,
   volume_1h REAL,
+  volume_30m REAL,
   volume_24h REAL,
   fee_tvl_ratio_1h REAL,
+  fee_tvl_ratio_30m REAL,
   fee_tvl_ratio_24h REAL,
   fee_apr_24h REAL,
   farm_apr REAL,
@@ -171,6 +173,12 @@ if (!poolScanCols.some((c) => c.name === "pool_age_days")) {
 }
 if (!poolScanCols.some((c) => c.name === "created_at")) {
   db.exec("ALTER TABLE pool_scans ADD COLUMN created_at INTEGER");
+}
+if (!poolScanCols.some((c) => c.name === "volume_30m")) {
+  db.exec("ALTER TABLE pool_scans ADD COLUMN volume_30m REAL");
+}
+if (!poolScanCols.some((c) => c.name === "fee_tvl_ratio_30m")) {
+  db.exec("ALTER TABLE pool_scans ADD COLUMN fee_tvl_ratio_30m REAL");
 }
 
 export function setMeta(key: string, value: string): void {

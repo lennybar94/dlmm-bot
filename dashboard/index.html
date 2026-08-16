@@ -103,7 +103,7 @@
   <table id="posTable">
     <thead><tr>
       <th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>Valeur</th><th>PnL net</th>
-      <th>Frais</th><th>IL</th><th>Range (bins)</th><th>Entrée</th><th>Rebal.</th>
+      <th>Frais</th><th>Fees %/jour</th><th>IL</th><th>Range (bins)</th><th>Entrée</th><th>Rebal.</th>
     </tr></thead>
     <tbody></tbody>
   </table>
@@ -237,26 +237,31 @@ function render(d) {
       <td>${usd(p.value_usd)}<br><span class="sol">${sol(p.value_usd, 2)}</span></td>
       <td class="${sign(p.net_pnl)}">${usd(p.net_pnl, 2)}<br><span class="sol">${sol(p.net_pnl)}</span></td>
       <td>${usd(p.fees, 2)}</td>
+      <td class="${p.fees_pct_day >= 0.5 ? "pos" : ""}" title="Frais cumulés / dépôt / jours ouverts">${p.fees_pct_day != null ? p.fees_pct_day.toFixed(2) + "%" : "—"}</td>
       <td class="${sign(p.il_usd)}">${usd(p.il_usd, 2)}</td>
       <td>${p.min_bin_id} … ${p.max_bin_id}</td>
       <td>${p.entry_price != null ? p.entry_price.toPrecision(4) : "—"}</td>
       <td>${p.rebalance_count}</td>
-    </tr>`).join("") || `<tr><td colspan="10" class="empty">Aucune position ouverte — lance 'npm run open:paper' après un scan.</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="11" class="empty">Aucune position ouverte — lance 'npm run open:paper' après un scan.</td></tr>`;
 
   // Opportunités : accordéons par score
   $("#oppCount").textContent = (d.opportunities || []).length;
   $("#opps").innerHTML = (d.opportunities || []).map((o) => {
     const h = o.strategy_hint || {};
+    const isQuick = h.strategy === "quick-inout";
     const sigs = (o.signals || []).map((x) => `<span class="sig">${x}</span>`).join("");
     return `<details class="acc">
       <summary><span style="min-width:52px">${o.score.toFixed(1)}</span> ${o.name}
+        ${isQuick ? '<span class="sig" style="background:var(--accent);color:#fff">⚡ quick in & out</span>' : ""}
         <span class="strat">${h.strategy || "—"}</span>
         <span style="margin-left:auto;color:var(--muted);font-weight:400;font-size:12px">APR ${pct(o.fee_apr_24h, 0)} · TVL ${fmt(o.tvl / 1e6, 1)}M$</span></summary>
       <div class="body">
         <table><tr>
-          <th>Vol 24h</th><th>Fees/TVL 24h</th><th>Bin step</th><th>Prix</th><th>Volatilité 24h</th><th>Range suggéré</th>
+          <th>Vol 30m</th><th>Vol 24h</th><th>Fees/TVL 24h</th><th>Âge pool</th><th>Bin step</th><th>Prix</th><th>Volatilité 24h</th><th>Range suggéré</th>
         </tr><tr>
+          <td class="${o.volume_30m >= 900000 ? "pos" : ""}">${o.volume_30m != null ? fmt(o.volume_30m / 1e6, 2) + "M$" : "—"}</td>
           <td>${fmt(o.volume_24h / 1e6, 1)}M$</td><td>${o.fee_tvl_ratio_24h != null ? o.fee_tvl_ratio_24h.toFixed(2) + "%" : "—"}</td>
+          <td>${o.pool_age_days != null ? o.pool_age_days.toFixed(1) + " j" : "—"}</td>
           <td>${o.bin_step}</td><td>${o.current_price != null ? o.current_price.toPrecision(4) : "—"}</td>
           <td>${o.vol_24h != null ? (o.vol_24h * 100).toFixed(0) + "%/j" : "—"}</td>
           <td>bins [${h.minBinId} … ${h.maxBinId}]</td>
