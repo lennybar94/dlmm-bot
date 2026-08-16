@@ -154,9 +154,15 @@ export function insertReview(pos: PaperPositionRow, reviewType: "closed" | "week
   };
 }
 
+/** Reasons de fermeture ADMINISTRATIVES (réallocation, opérations) — pas des
+ * outcomes de stratégie : elles ne doivent PAS créer de review (une position
+ * fermée à l'ouverture avec PnL ~0 polluerait l'évidence du tuner). */
+const ADMIN_CLOSE_REASONS = new Set(["reconfig", "admin", "admin-close", "manual"]);
+
 /** Review à la fermeture (appelée par closePosition). */
 export function reviewPositionOnClose(pos: PaperPositionRow): void {
   if (pos.status !== "closed") return;
+  if (pos.close_reason && ADMIN_CLOSE_REASONS.has(pos.close_reason)) return;
   insertReview(pos, "closed");
 }
 
