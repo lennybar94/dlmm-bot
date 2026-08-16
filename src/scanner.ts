@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isFeePrinterCandidate, isWatchlisted } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isFeePrinterCandidate, isWatchlisted, DEFAULT_STRATEGY } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -40,13 +40,24 @@ function passesFilters(p: Pool, rules: RuleSet): { ok: boolean; reason: string }
  * - stabilité du volume (volume_1h vs volume_24h/24)
  * - pénalité pour les pools très jeunes / sans launchpad connu
  */
-export function scorePool(p: Pool, vol24h: number, rules: RuleSet): { score: number; signals: string[] } {
+export function scorePool(
+  p: Pool,
+  vol24h: number,
+  rules: RuleSet,
+  strategy: string = DEFAULT_STRATEGY
+): { score: number; signals: string[] } {
   const signals: string[] = [];
   const aprLog = Math.log10(1 + p.fee_apr_24h); // 1+ → APR 1000% ≈ 3.0
   const volStability = Math.min(1, p.volume_1h / Math.max(1, p.volume_24h / 24));
   const tvlScore = Math.min(1, Math.sqrt(p.tvl / 500_000));
   const farmBonus = p.farm_apr > 10 ? rules.farmBonus : 0;
-  const volPenalty = vol24h > 1.2 ? rules.volPenalty : 0; // volatilité extrême
+  // Stratégies tolérantes à la σ (bidask-dip, quick-inout) : l'échelle
+  // anti-dump et la sortie rapide SONT les protections contre la volatilité —
+  // pas de pénalité (cohérent avec leur exemption du plafond σ au scan). La
+  // pénalité ne s'applique qu'aux stratégies spot/curve où l'IL détruit les
+  // gains. (Résout la contradiction scan-admet/score-pénalise.)
+  const sigmaTolerant = strategy === "bidask-dip" || strategy === "quick-inout";
+  const volPenalty = vol24h > 1.2 && !sigmaTolerant ? rules.volPenalty : 0; // volatilité extrême
 
   let score =
     (rules.wApr / 100) * Math.min(1, aprLog / 3) * 100 +
@@ -130,12 +141,20 @@ export async function runScan(): Promise<ScanResult> {
         });
         continue;
       }
-      const { score, signals } = scorePool(p, vol, rules);
-      const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
+      // Priorité de playbook par ÂGE (ressenti des users X, résout le
+      // recouvrement quick-inout / bidask-dip) :
+      // - pool RÉCENT (≤ 2 j) en spike ≥ 30K$/min → quick-inout (Tikz : chasser
+      //   le nouveau pool tôt, position serrée, sortie rapide)
+      // - pool ÉTABLI avec gros volume + gros fees/TVL → bidask-dip (0xmiir :
+      //   les fee printers persistants — échelle anti-dump sur rebond)
+      // Un pool jeune en spike qui est AUSSI fee printer → quick-inout prime
+      // (le spike est la fenêtre de trading, pas l'échelle).
       let strategy = strategyForVolatility(vol, rules);
-      // Override playbook Tikz : le spike 30m sur pool récent prime sur la
-      // stratégie par volatilité — on ouvre SERRÉ et on sort vite.
       if (quick) strategy = "quick-inout";
+      const { score, signals } = scorePool(p, vol, rules, strategy);
+      if (quick && feePrinter)
+        signals.push("⚡ pool jeune en spike + fee printer — quick-inout prime (Tikz)");
+      const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
       const drawdown = drawdownFromHigh(candles, p.current_price);
       // Filtres bidask-dip (playbook Tiagogo) :
       // D — volume min : l'échelle anti-dump compte sur les frais dynamiques

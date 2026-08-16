@@ -104,6 +104,11 @@ export const config = {
   minFeeTvlFeePrinter: num("MIN_FEE_TVL_FEEPRINTER", 0.5), // % fees/TVL 24h min
   watchlistTokens: str("WATCHLIST_TOKENS", "ANSEM,MANLET,TOAD,CATE"), // watchlist 0xmiir
   migrationMinVolume24h: num("MIGRATION_MIN_VOLUME_24H", 5_000_000), // « 5M+ volume sur le DLMM » (0xmiir)
+  // Cap de slots pour le playbook quick-inout (Tikz : « a couple tight
+  // positions ») : le playbook twitchy (positions qui se ferment en 15-30 min)
+  // ne doit pas cannibaliser tout le book — le reste du capital va aux fee
+  // printers / bidask-dip (le cœur, 0xmiir/VladimirKovacs).
+  maxQuickInoutPositions: num("MAX_QUICK_INOUT_POSITIONS", 2),
 
   // Apprentissage (outcome reviews + tuner)
   tuneMinSamples: num("TUNE_MIN_SAMPLES", 10),

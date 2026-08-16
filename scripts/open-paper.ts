@@ -14,6 +14,13 @@ const openAddresses = new Set(openPositions.map((p) => p.pool_address));
 // Cap de diversification par token : max 1 position par token (les pools du même
 // token — ex. 3× ANSEM-SOL — sont corrélés, zap-out groupé = chart cassé).
 const openTokens = new Set(openPositions.map((p) => p.token_x_symbol?.toLowerCase() ?? p.name));
+// Cap de slots pour le playbook quick-inout (Tikz : « a couple tight
+// positions ») : le playbook twitchy ne cannibalise pas le book — le reste du
+// capital va aux fee printers / bidask-dip (le cœur).
+const openStrategies = new Map<string, number>();
+for (const p of openPositions)
+  openStrategies.set(p.strategy, (openStrategies.get(p.strategy) ?? 0) + 1);
+let quickSlots = Math.max(0, config.maxQuickInoutPositions - (openStrategies.get("quick-inout") ?? 0));
 const slots = Math.max(0, config.maxPositions - openPositions.length);
 if (slots <= 0) {
   console.log(`Portefeuille plein (${openPositions.length}/${config.maxPositions} positions) — rien à ouvrir.`);
@@ -23,6 +30,7 @@ if (slots <= 0) {
 const scan = await runScan();
 let opened = 0;
 let skippedSameToken = 0;
+let skippedQuickCap = 0;
 for (const opp of scan.opportunities) {
   if (opened >= Math.min(limit, slots)) break;
   if (openAddresses.has(opp.pool.address)) continue;
@@ -31,13 +39,24 @@ for (const opp of scan.opportunities) {
     skippedSameToken++;
     continue;
   }
+  if (opp.strategyHint.strategy === "quick-inout") {
+    if (quickSlots <= 0) {
+      skippedQuickCap++;
+      continue;
+    }
+    quickSlots--;
+  }
   const r = openPaperPosition(opp);
   console.log(`  Ouvert #${r.positionId}: ${opp.pool.name} — ${opp.strategyHint.strategy}, ${config.depositUsdPerPosition}$ (score ${opp.score.toFixed(1)})`);
   openAddresses.add(opp.pool.address);
   openTokens.add(tokenKey);
   opened++;
 }
-console.log(`Terminé : ${opened} position(s) ouverte(s) sur ${config.depositUsdPerPosition}$ chacune${skippedSameToken ? ` (${skippedSameToken} pool(s) sauté(s) : token déjà en portefeuille)` : ""}.`);
+console.log(
+  `Terminé : ${opened} position(s) ouverte(s) sur ${config.depositUsdPerPosition}$ chacune` +
+    `${skippedSameToken ? ` (${skippedSameToken} pool(s) sauté(s) : token déjà en portefeuille)` : ""}` +
+    `${skippedQuickCap ? ` (${skippedQuickCap} quick-inout sauté(s) : cap ${config.maxQuickInoutPositions} atteint)` : ""}.`
+);
 
 // Petit état du portefeuille
 const summary = db
