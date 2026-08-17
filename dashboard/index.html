@@ -115,6 +115,11 @@
 </section>
 
 <section>
+  <h2>👁 Radar early <span class="count" id="earlyCount">0</span></h2>
+  <div class="early" id="early"></div>
+</section>
+
+<section>
   <h2>Positions fermées <span class="count" id="closedCount">0</span></h2>
   <table id="closedTable">
     <thead><tr><th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>Valeur</th><th>Frais</th><th>PnL</th><th>Raison</th><th>Fermée</th></tr></thead>
@@ -272,6 +277,32 @@ function render(d) {
       </div>
     </details>`;
   }).join("") || `<div class="empty">Aucune opportunité — lance 'npm run scan:pools'.</div>`;
+
+  // Radar early (GMGN : « voir tôt ≠ entrer tôt ») — pools jeunes en activité,
+  // pas encore éligibles à l'entrée. Jamais ouverts en auto.
+  const early = d.early_watch || [];
+  $("#earlyCount").textContent = early.length;
+  $("#early").innerHTML = early.map((o) => {
+    const sigs = (o.signals || []).map((x) => `<span class="sig">${x}</span>`).join("");
+    return `<details class="acc">
+      <summary><span style="min-width:52px">👁</span> ${o.name}
+        <span class="strat">early watch</span>
+        <span style="margin-left:auto;color:var(--muted);font-weight:400;font-size:12px">vol 30m ${fmt(o.volume_30m / 1e6, 2)}M$ · TVL ${fmt(o.tvl / 1e6, 1)}M$ · ${o.pool_age_days != null ? o.pool_age_days.toFixed(1) + " j" : "—"}</span></summary>
+      <div class="body">
+        <table><tr>
+          <th>Vol 30m</th><th>Vol 24h</th><th>Fees/TVL 30m</th><th>Fees/TVL 24h</th><th>Âge pool</th><th>Bin step</th><th>Prix</th>
+        </tr><tr>
+          <td class="${o.volume_30m >= 900000 ? "pos" : ""}">${o.volume_30m != null ? fmt(o.volume_30m / 1e6, 2) + "M$" : "—"}</td>
+          <td>${fmt(o.volume_24h / 1e6, 1)}M$</td>
+          <td>${o.fee_tvl_ratio_30m != null ? o.fee_tvl_ratio_30m.toFixed(2) + "%" : "—"}</td>
+          <td>${o.fee_tvl_ratio_24h != null ? o.fee_tvl_ratio_24h.toFixed(2) + "%" : "—"}</td>
+          <td>${o.pool_age_days != null ? o.pool_age_days.toFixed(1) + " j" : "—"}</td>
+          <td>${o.bin_step}</td><td>${o.current_price != null ? o.current_price.toPrecision(4) : "—"}</td>
+        </tr></table>
+        <div style="margin-top:8px">${sigs || '<span style="color:var(--muted)">activité détectée — analyse en cours</span>'}</div>
+      </div>
+    </details>`;
+  }).join("") || `<div class="empty">Aucun pool jeune en démarrage — le radar revient au prochain scan.</div>`;
 
   // Positions fermées
   $("#closedCount").textContent = (d.closed_positions || []).length;

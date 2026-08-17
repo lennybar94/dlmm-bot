@@ -13,6 +13,7 @@ export interface ScanResult {
   poolsSeen: number;
   poolsKept: number;
   opportunities: OpportunityScore[];
+  earlyWatch: { pool: Pool; note: string }[];
 }
 
 function passesFilters(p: Pool, rules: RuleSet): { ok: boolean; reason: string } {
@@ -28,10 +29,45 @@ function passesFilters(p: Pool, rules: RuleSet): { ok: boolean; reason: string }
     return { ok: false, reason: `vol 24h < ${config.minVolume24h}$` };
   if (p.pool_age_days < config.minPoolAgeDays && !quick)
     return { ok: false, reason: "pool trop récent" };
-  if (p.fee_tvl_ratio_24h < rules.minFeeTvlRatio24h)
+  if (p.fee_tvl_ratio_24h < rules.minFeeTvlRatio24h) {
+    // Leçon anti-rug (GMGN/DucatelRomain03 : « 0,8 de fees = rug, tout est
+    // fait artificiellement ») : un GROS volume qui ne génère quasi pas de
+    // frais = volume wash/artificiel (pompe de bots). Raison explicite au
+    // lieu du rejet générique pour les volumes significatifs.
+    if (p.volume_24h >= config.washMinVolume24h)
+      return {
+        ok: false,
+        reason: `⚠️ wash suspect : vol 24h ${(p.volume_24h / 1000).toFixed(0)}k$ pour fees/TVL ${p.fee_tvl_ratio_24h.toFixed(3)}% (GMGN : gros volume sans frais = artificiel)`,
+      };
     return { ok: false, reason: `fees/TVL 24h < ${rules.minFeeTvlRatio24h}%` };
+  }
   if (!p.current_price || p.current_price <= 0) return { ok: false, reason: "prix absent" };
   return { ok: true, reason: "" };
+}
+
+/**
+ * Volume échangé depuis le scan précédent du même pool (= volume pendant
+ * l'intervalle de scan, proxy du « trending 5 min » de GMGN — les fenêtres
+ * fixes de l'API (30m/1h) sont trop lentes pour voir un démarrage tôt).
+ * Retourne { delta, minutes } ou null si pas d'historique / delta incohérent.
+ */
+const prevScanStmt = db.prepare(
+  `SELECT scanned_at, volume_24h FROM pool_scans
+   WHERE pool_address = ? AND scanned_at < ? AND volume_24h > 0
+   ORDER BY scanned_at DESC LIMIT 1`
+);
+
+export function recentVolumeDelta(
+  poolAddress: string,
+  scannedAt: number,
+  currentVolume24h: number
+): { delta: number; minutes: number } | null {
+  const prev = prevScanStmt.get(poolAddress, scannedAt) as { scanned_at: number; volume_24h: number } | undefined;
+  if (!prev) return null;
+  const delta = currentVolume24h - prev.volume_24h;
+  const minutes = (scannedAt - prev.scanned_at) / 60_000;
+  if (!Number.isFinite(delta) || delta <= 0 || minutes <= 0) return null;
+  return { delta, minutes };
 }
 
 /**
@@ -109,11 +145,28 @@ export async function runScan(): Promise<ScanResult> {
   const pools = await fetchTopPools(config.scanTopPools);
   const kept: Pool[] = [];
   const rejected: { pool: Pool; reason: string }[] = [];
+  // Radar early (GMGN/DucatelRomain03 : « voir tôt ≠ entrer tôt ») : pools
+  // jeunes qui démarrent en volume mais ne passent pas encore les filtres
+  // d'entrée (âge/TVL) → surveillés au dashboard, JAMAIS ouverts en auto.
+  const earlyWatch: { pool: Pool; note: string }[] = [];
 
   for (const p of pools) {
     const f = passesFilters(p, rules);
     if (f.ok) kept.push(p);
-    else rejected.push({ pool: p, reason: f.reason });
+    else {
+      rejected.push({ pool: p, reason: f.reason });
+      const young =
+        f.reason.startsWith("pool trop récent") || f.reason.startsWith("TVL <");
+      const active30m = p.volume_30m >= config.quickMinVolume30m;
+      const d = recentVolumeDelta(p.address, scannedAt, p.volume_24h);
+      const activeDelta = d !== null && d.delta >= config.spikeMinDeltaPerMin * d.minutes;
+      if (young && p.pool_age_days <= config.earlyMaxPoolAgeDays && (active30m || activeDelta)) {
+        const note = d && d.delta >= config.spikeMinDeltaPerMin * d.minutes
+          ? `+${(d.delta / 1000).toFixed(0)}k$ en ~${Math.round(d.minutes)}min`
+          : `vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$`;
+        earlyWatch.push({ pool: p, note });
+      }
+    }
   }
 
   // Volatilité réalisée sur les pools retenus (30 RPS max → délai).
@@ -154,6 +207,14 @@ export async function runScan(): Promise<ScanResult> {
       const { score, signals } = scorePool(p, vol, rules, strategy);
       if (quick && feePrinter)
         signals.push("⚡ pool jeune en spike + fee printer — quick-inout prime (Tikz)");
+      // Trending court (GMGN/DucatelRomain03) : delta de volume entre scans =
+      // volume échangé pendant l'intervalle (≈ 5 min avec un scan rapproché).
+      // Voir le démarrage tôt, avant que la fenêtre 30m de l'API ne confirme.
+      const deltaInfo = recentVolumeDelta(p.address, scannedAt, p.volume_24h);
+      if (deltaInfo && deltaInfo.delta >= config.spikeMinDeltaPerMin * deltaInfo.minutes)
+        signals.push(
+          `⚡ trending court (GMGN) : +${(deltaInfo.delta / 1000).toFixed(0)}k$ en ~${Math.round(deltaInfo.minutes)}min — voir tôt ≠ entrer tôt`
+        );
       const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
       const drawdown = drawdownFromHigh(candles, p.current_price);
       // Filtres bidask-dip (playbook Tiagogo) :
@@ -269,6 +330,44 @@ export async function runScan(): Promise<ScanResult> {
     );
   }
 
-  logEvent("scan", `Scan terminé : ${pools.length} pools vus, ${kept.length} retenus, ${opportunities.length} opportunités scorées.`);
-  return { scannedAt, poolsSeen: pools.length, poolsKept: kept.length, opportunities };
+  // Radar early : pools jeunes en activité mais exclus des filtres d'entrée —
+  // insérés en pool_scans (score 0 → pas une opportunité, pas de notif) pour
+  // la section « 👁 radar early » du dashboard.
+  for (const e of earlyWatch) {
+    const p = e.pool;
+    insertPool.run(
+      scannedAt,
+      p.address,
+      p.name,
+      p.token_x.symbol,
+      p.token_y.symbol,
+      p.tvl,
+      p.volume_1h,
+      p.volume_30m,
+      p.volume_24h,
+      p.fee_tvl_ratio_1h,
+      p.fee_tvl_ratio_30m,
+      p.fee_tvl_ratio_24h,
+      p.fee_apr_24h,
+      p.farm_apr,
+      p.base_fee_pct,
+      p.dynamic_fee_pct,
+      p.bin_step,
+      p.launchpad,
+      p.is_blacklisted ? 1 : 0,
+      p.current_price,
+      0,
+      0,
+      JSON.stringify([`👁 radar early (GMGN : voir tôt ≠ entrer tôt) : ${e.note} — pas d'entrée auto`]),
+      "{}",
+      p.pool_age_days,
+      p.created_at
+    );
+  }
+
+  logEvent(
+    "scan",
+    `Scan terminé : ${pools.length} pools vus, ${kept.length} retenus, ${opportunities.length} opportunités scorées, ${earlyWatch.length} en radar early.`
+  );
+  return { scannedAt, poolsSeen: pools.length, poolsKept: kept.length, opportunities, earlyWatch };
 }

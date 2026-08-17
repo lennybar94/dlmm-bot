@@ -95,6 +95,21 @@ export const config = {
   quickMinFeeTvlRatio30m: num("QUICK_MIN_FEE_TVL_30M", 0.02), // % fees/TVL sur 30m (frais qui tournent)
   quickVolumeFadeFactor: num("QUICK_VOLUME_FADE_FACTOR", 0.5), // sortie si vol 30m < 50% du seuil
 
+  // Astuce « trending court » (DucatelRomain03, 2026-08-17) : sur GMGN, le
+  // filtre Trending 5 min + Volume ≥ 50k (≈ 10k$/min) sert à VOIR tôt les
+  // tokens qui démarrent, pas à entrer tôt. Proxy DLMM : delta de volume_24h
+  // entre deux scans rapprochés (= volume échangé pendant l'intervalle) →
+  // signal « ⚡ trending court » sans dépendre des fenêtres fixes de l'API
+  // (30m/1h). Avec un scan toutes les 5 min, le delta mesure ~5 min de volume.
+  spikeMinDeltaPerMin: num("SPIKE_MIN_DELTA_PER_MIN", 10_000), // 10k$/min (GMGN : 50k/5min)
+  // Leçon anti-rug (GMGN : « 0,8 de fees = rug, tout est fait artificiellement ») :
+  // un gros volume qui ne génère quasi pas de frais = volume wash/artificiel.
+  washMinVolume24h: num("WASH_MIN_VOLUME_24H", 250_000), // palier « gros volume » (GMGN : 250k)
+  // Radar early (« voir tôt ≠ entrer tôt ») : pools jeunes qui démarrent en
+  // volume mais ne passent pas encore les filtres d'entrée → surveillés au
+  // dashboard pour analyse, jamais ouverts automatiquement.
+  earlyMaxPoolAgeDays: num("EARLY_MAX_POOL_AGE_DAYS", 3),
+
   // Playbook fee printers (0xmiir, 2026-08-16) : les meilleurs encaisseurs de
   // frais du marché (ANSEM/MANLET/TOAD/CATE) font 0.5-2.5% de fees/TVL 24h avec
   // une volatilité extrême — le plafond σ (60%/j, antérieur au playbook

@@ -161,6 +161,25 @@ export async function exportData(): Promise<string> {
     .prepare("SELECT MAX(created_at) m FROM events WHERE type = 'monitor'")
     .get() as { m: number | null };
 
+  // Radar early (GMGN : « voir tôt ≠ entrer tôt ») : pools jeunes en activité
+  // mais exclus des filtres d'entrée — section dashboard, jamais ouverts en auto.
+  const earlyWatch = lastScan
+    .filter((r) => (r.signals as string).includes("radar early"))
+    .slice(0, 20)
+    .map((r) => ({
+      pool_address: r.pool_address,
+      name: r.name,
+      tvl: r.tvl,
+      volume_30m: r.volume_30m,
+      volume_24h: r.volume_24h,
+      fee_tvl_ratio_30m: r.fee_tvl_ratio_30m,
+      fee_tvl_ratio_24h: r.fee_tvl_ratio_24h,
+      pool_age_days: r.pool_age_days,
+      bin_step: r.bin_step,
+      current_price: r.current_price,
+      signals: safeJson(r.signals as string),
+    }));
+
   const payload = {
     generated_at: now,
     summary: getPortfolioSummary(),
@@ -174,6 +193,7 @@ export async function exportData(): Promise<string> {
     },
     learning: buildLearningExport(),
     opportunities,
+    early_watch: earlyWatch,
     positions,
     closed_positions: closedPositions,
     snapshots,
