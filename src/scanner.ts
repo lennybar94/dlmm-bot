@@ -107,6 +107,21 @@ export function scorePool(
   if (p.fee_apr_24h > 100) signals.push("APR fees 24h > 100%");
   if (volStability > 0.7) signals.push("volume stable");
   if (p.fee_tvl_ratio_24h > 0.5) signals.push("fees/TVL très élevé");
+  // Durabilité des frais (Lamsito_eth/$NET : la sustainable-ness, pas l'APR
+  // affiché — « le casino fait grossir la maison » = les frais RÉCURRENTS).
+  // fee_tvl_ratio est par fenêtre → rythme uniforme ⇒ ratio_1h ≈ ratio_24h/24.
+  // feeDecay = rythme horaire actuel / rythme moyen 24h (≈1 = durable).
+  if (p.fee_tvl_ratio_24h >= 0.05 && p.fee_tvl_ratio_1h != null) {
+    const feeDecay = (24 * p.fee_tvl_ratio_1h) / Math.max(0.0001, p.fee_tvl_ratio_24h);
+    if (feeDecay >= 1.2) signals.push(`fees en accélération (1h = ${(feeDecay * 100).toFixed(0)}% du rythme 24h)`);
+    else if (feeDecay >= 0.6) signals.push(`fees durables (rythme 1h ≈ ${(feeDecay * 100).toFixed(0)}% de la moyenne 24h)`);
+    else signals.push(`⚠️ fees en déclin (1h = ${(feeDecay * 100).toFixed(0)}% du rythme 24h) — le yield s'essouffle`);
+  }
+  // Profil réflexif (Lamsito_eth/$NET) : APR délirant + σ extrême = ponzinomics
+  // — le yield peut être réel TANT QUE la demande tient, mais l'unwind est
+  // violent si elle meurt (émissions dynamiques/premium absents côté DLMM).
+  if (p.fee_apr_24h >= 500 && vol24h >= 1.5)
+    signals.push(`⚠️ profil réflexif (ponzinomics) : APR ${p.fee_apr_24h.toFixed(0)}% + σ ${(vol24h * 100).toFixed(0)}%/j — unwind violent si la demande meurt`);
   if (p.launchpad) signals.push(`launchpad: ${p.launchpad}`);
   if (p.farm_apr > 10) signals.push(`farm APR ${p.farm_apr.toFixed(0)}%`);
   if (vol24h > 0.5) signals.push(`volatilité élevée (${(vol24h * 100).toFixed(0)}%/j)`);
