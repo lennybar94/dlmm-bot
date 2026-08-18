@@ -212,13 +212,13 @@ function render(d) {
   const sol = (usdVal, dec = 2) =>
     solPrice && usdVal != null ? "≈ " + (usdVal / solPrice).toFixed(dec) + " SOL" : "";
   const s = d.summary;
-  const feesTotal = s.fees_earned_usd + s.fees_claimed_usd;
+  const feesTotal = s.feesEarnedUsd + s.feesClaimedUsd;
 
   const kpis = [
-    ["Valeur portefeuille", usd(s.value_usd, 0), s.open + " positions · " + sol(s.value_usd, 1)],
-    ["PnL net", usd(s.net_pnl_usd, 2), "valeur + frais − investi · " + sol(s.net_pnl_usd), sign(s.net_pnl_usd)],
-    ["Frais encaissés", usd(feesTotal, 2), "dont claims " + usd(s.fees_claimed_usd, 2) + " · " + sol(feesTotal)],
-    ["Investi", usd(s.invested_usd, 0), s.rebalances + " rebalances · " + sol(s.invested_usd, 1)],
+    ["Valeur portefeuille", usd(s.valueUsd, 0), s.open + " positions · " + sol(s.valueUsd, 1)],
+    ["PnL net", usd(s.netPnlUsd, 2), "valeur + frais − investi · " + sol(s.netPnlUsd), sign(s.netPnlUsd)],
+    ["Frais encaissés", usd(feesTotal, 2), "dont claims " + usd(s.feesClaimedUsd, 2) + " · " + sol(feesTotal)],
+    ["Investi", usd(s.investedUsd, 0), s.rebalances + " rebalances · " + sol(s.investedUsd, 1)],
   ];
   $("#kpis").innerHTML = kpis.map(([l, v, sub, cls]) =>
     `<div class="kpi"><div class="label">${l}</div><div class="value ${cls || ""}">${v}</div><div class="sub">${sub}</div></div>`
@@ -253,12 +253,12 @@ function render(d) {
   $("#oppCount").textContent = (d.opportunities || []).length;
   $("#opps").innerHTML = (d.opportunities || []).map((o) => {
     const h = o.strategy_hint || {};
-    const isQuick = h.strategy === "quick-inout";
+    const isQuick = h.strategy === "topblast";
     const isFeePrinter = (o.signals || []).some((x) => x.includes("fee printer"));
     const sigs = (o.signals || []).map((x) => `<span class="sig">${x}</span>`).join("");
     return `<details class="acc">
       <summary><span style="min-width:52px">${o.score.toFixed(1)}</span> ${o.name}
-        ${isQuick ? '<span class="sig" style="background:var(--accent);color:#fff">⚡ quick in & out</span>' : ""}
+        ${isQuick ? '<span class="sig" style="background:var(--accent);color:#fff">⚡ top blast</span>' : ""}
         ${isFeePrinter ? '<span class="sig" style="background:#16a34a;color:#fff">🖨️ fee printer</span>' : ""}
         <span class="strat">${h.strategy || "—"}</span>
         <span style="margin-left:auto;color:var(--muted);font-weight:400;font-size:12px">APR ${pct(o.fee_apr_24h, 0)} · TVL ${fmt(o.tvl / 1e6, 1)}M$</span></summary>
