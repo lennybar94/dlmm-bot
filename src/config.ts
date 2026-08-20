@@ -72,11 +72,6 @@ export const config = {
   // Diversification : max 1 position par token (les 3× ANSEM-SOL étaient 3 pools
   // du même token — risque corrélé zap-out, contre le playbook 6-7 positions).
   maxPositionsPerToken: num("MAX_POSITIONS_PER_TOKEN", 1),
-  // DCA quotidien (playbook Djedje20x) : ajout périodique de quote (SOL) aux
-  // positions bidask-dip ouvertes — l'échelle grossit, les fees aussi.
-  dcaEnabled: bool("DCA_ENABLED", false),
-  dcaDailyUsd: num("DCA_DAILY_USD", 100),
-  dcaHourUtc: num("DCA_HOUR_UTC", 7),
 
   // Exit Bollinger (Tiagogo : cassure de la Bollinger haute en 15 min → sortie).
   // Bougies 15 min construites depuis les marks du bot (monitor 15 min).
@@ -119,11 +114,53 @@ export const config = {
   minFeeTvlFeePrinter: num("MIN_FEE_TVL_FEEPRINTER", 0.5), // % fees/TVL 24h min
   watchlistTokens: str("WATCHLIST_TOKENS", "ANSEM,MANLET,TOAD,CATE"), // watchlist 0xmiir
   migrationMinVolume24h: num("MIGRATION_MIN_VOLUME_24H", 5_000_000), // « 5M+ volume sur le DLMM » (0xmiir)
-  // Cap de slots pour le playbook quick-inout (Tikz : « a couple tight
-  // positions ») : le playbook twitchy (positions qui se ferment en 15-30 min)
-  // ne doit pas cannibaliser tout le book — le reste du capital va aux fee
-  // printers / bidask-dip (le cœur, 0xmiir/VladimirKovacs).
-  maxQuickInoutPositions: num("MAX_QUICK_INOUT_POSITIONS", 2),
+  // Top blast (setup 1, validé David 2026-08-18) : la stratégie spike du bot,
+  // single-sided SOL, range 10-15 bins au total — « tu es présent pendant la
+  // première jambe haussière » (satsmonkes). Absorbe l'ancien quick-inout
+  // (Tikz : même porte d'entrée spike ≥ 30K$/min + pool récent + fees, sortie
+  // rapide). Cap de slots dédié : le playbook twitchy ne doit pas cannibaliser
+  // le book (bidask-dip / fee printers = le cœur).
+  maxTopblastPositions: num("MAX_TOPBLAST_POSITIONS", 2),
+
+  // Playbook satsmonkes (setup 2, 2026-08-18) : ancre Fibonacci du bidask-dip.
+  // Au lieu d'un % de dump fixe, la range est ancrée sur la STRUCTURE — zone
+  // 0.5 → 0.786 du retracement du swing (ATH → low majeur) sur l'OHLCV dispo :
+  // « tu déploies à travers toute la zone où le marché réagit statistiquement,
+  // là où la majorité des buyers ré-entrent ». Le % de couverture découle du
+  // swing, pas d'un présupposé. Fallback silencieux sur dipTarget si le swing
+  // est trop petit (token sans structure) ou si le prix a déjà traversé la zone.
+  satsFibEnabled: bool("SATS_FIB_ENABLED", true),
+  satsFibZoneLo: num("SATS_FIB_ZONE_LO", 0.5), // bord haut de la zone (retracement 0 = ATH)
+  satsFibZoneHi: num("SATS_FIB_ZONE_HI", 0.786), // bord bas (1 = low du swing)
+  satsFibMinSwing: num("SATS_FIB_MIN_SWING", 0.2), // amplitude min high/low (20%) pour un swing valide
+  // Signal « flip candidat » (playbook satsmonkes, setup 4, 2026-08-18) :
+  // DÉTECTION SEULE. Sur une position bidask-dip en accumulation, quand la
+  // structure montre les premiers signes de retournement (pas de nouveau low,
+  // premier higher low), satsmonkes INVERSE la range au-dessus du prix pour
+  // distribuer à la reprise. Ici on ne fait que SIGNALER (event + Telegram) —
+  // l'exécution du flip reste une décision humaine (paper-first, rollout
+  // approuvé). Cooldown par position pour éviter le spam.
+  satsFlipSignalEnabled: bool("SATS_FLIP_SIGNAL_ENABLED", true),
+  satsFlipLookback: num("SATS_FLIP_LOOKBACK", 6), // marks considérés (~90 min à 15 min/scan)
+  satsFlipCooldownHours: num("SATS_FLIP_COOLDOWN_HOURS", 6), // 1 signal max / position / fenêtre
+  // Exécution du flip en paper (setup 4, validé David 2026-08-18) : quand la
+  // structure se retourne (higher low + rebond) sur une bidask-dip avec un bag
+  // partiel, la position est RE-PROJETÉE single-sided token AU-DESSUS du prix —
+  // le moteur d'accumulation devient un moteur de distribution (fees des deux
+  // côtés). Paper-first : mesurable, réversible. Désactivé = signal seul.
+  satsFlipExecute: bool("SATS_FLIP_EXECUTE", true),
+  satsFlipMinTokenShare: num("SATS_FLIP_MIN_TOKEN_SHARE", 0.2), // bag ≥ 20% en token avant de flipper
+  // Sizing par classe (satsmonkes : « la taille est inverse à la volatilité et
+  // inverse au gap de conviction ») : exploratoire petit (memecoin inconnu),
+  // conviction moyen (établi), majors gros (blue chip / gros TVL+volume).
+  // Remplace le dépôt fixe DEPOSIT_USD_PER_POSITION quand activé.
+  satsSizingEnabled: bool("SATS_SIZING_ENABLED", true),
+  satsSizeExploratoryUsd: num("SATS_SIZE_EXPLORATORY_USD", 500),
+  satsSizeConvictionUsd: num("SATS_SIZE_CONVICTION_USD", 1_000),
+  satsSizeMajorUsd: num("SATS_SIZE_MAJOR_USD", 2_000),
+  satsMajorMinTvl: num("SATS_MAJOR_MIN_TVL", 500_000),
+  satsMajorMinVolume24h: num("SATS_MAJOR_MIN_VOLUME_24H", 5_000_000),
+  satsExploratoryMaxAgeDays: num("SATS_EXPLORATORY_MAX_AGE_DAYS", 7),
 
   // Apprentissage (outcome reviews + tuner)
   tuneMinSamples: num("TUNE_MIN_SAMPLES", 10),

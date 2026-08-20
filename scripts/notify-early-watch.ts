@@ -82,6 +82,7 @@ async function main(): Promise<void> {
       else if (s.includes("wash suspect")) collect("🧹", r, "wash", s);
       else if (s.includes("trending court")) collect("⚡", r, "trending", s);
       else if (s.includes("réflexif")) collect("⚠️", r, "reflexif", s);
+      else if (s.includes("zone Fib")) collect("🎯", r, "fib", s);
       else if (s.includes("fees en déclin")) {
         const m = s.match(/1h = (\d+)%/);
         if (m && Number(m[1]) < 30 && (r.score ?? 0) >= 25) collect("📉", r, "declin", s);

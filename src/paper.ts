@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchPool } from "./api.js";
-import { STRATEGY_PRESETS, binIdFromPrice } from "./strategies.js";
+import { STRATEGY_PRESETS, binIdFromPrice, depositForPool } from "./strategies.js";
 import { getRules } from "./rules.js";
 import { reviewPositionOnClose } from "./review.js";
 import type { MarkResult, OpportunityScore, PaperPositionRow, StrategyName } from "./types.js";
@@ -118,17 +118,22 @@ export interface OpenResult {
 }
 
 /** Ouvre une position paper sur une opportunité scorée. */
-export function openPaperPosition(opp: OpportunityScore, depositUsd = config.depositUsdPerPosition): OpenResult {
+export function openPaperPosition(opp: OpportunityScore, depositUsd?: number): OpenResult {
   const p = opp.pool;
   const hint = opp.strategyHint;
   const preset = STRATEGY_PRESETS[hint.strategy] ?? STRATEGY_PRESETS["spot-spread"];
   const yUsd = estimateYUsd(p);
   const entryPrice = p.current_price;
+  // Sizing par classe (playbook satsmonkes — « la taille est inverse à la
+  // volatilité et inverse au gap de conviction ») : exploratoire petit (pool
+  // jeune/pump.fun = tuition), conviction moyen (établi), majors gros (gros
+  // TVL + gros volume). Dépôt explicite ou fixe si SATS_SIZING_ENABLED=false.
+  const depositUsdFinal = depositUsd ?? depositForPool(p);
+  const depositY = depositUsdFinal / yUsd;
 
   const activeBinId = binIdFromPrice(entryPrice, p.bin_step);
   const minBinId = hint.minBinId ?? activeBinId - 10;
   const maxBinId = hint.maxBinId ?? activeBinId + 10;
-  const depositY = depositUsd / yUsd;
   const liq = buildLiquidity({
     depositY,
     price: entryPrice,
@@ -154,7 +159,7 @@ export function openPaperPosition(opp: OpportunityScore, depositUsd = config.dep
       p.address,
       p.name,
       hint.strategy,
-      depositUsd,
+      depositUsdFinal,
       minBinId,
       maxBinId,
       p.bin_step,
@@ -165,7 +170,7 @@ export function openPaperPosition(opp: OpportunityScore, depositUsd = config.dep
       amountX,
       amountY,
       entryPrice,
-      depositUsd,
+      depositUsdFinal,
       0,
       entryPrice,
       Date.now()
@@ -174,7 +179,7 @@ export function openPaperPosition(opp: OpportunityScore, depositUsd = config.dep
   const positionId = Number(info.lastInsertRowid);
   logEvent(
     "open",
-    `Position paper ouverte : ${p.name} — ${hint.strategy}, ${depositUsd}$ (${amountX.toFixed(4)} ${p.token_x.symbol} / ${amountY.toFixed(2)} ${p.token_y.symbol}), bins [${minBinId}..${maxBinId}]`,
+    `Position paper ouverte : ${p.name} — ${hint.strategy}, ${depositUsdFinal}$ (${amountX.toFixed(4)} ${p.token_x.symbol} / ${amountY.toFixed(2)} ${p.token_y.symbol}), bins [${minBinId}..${maxBinId}]`,
     { positionId, poolAddress: p.address }
   );
   return { positionId, amountX, amountY, minBinId, maxBinId, entryPrice };
@@ -271,16 +276,38 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
 
   // --- Triggers ---
   const isDip = pos.strategy === "bidask-dip";
-  const isQuick = pos.strategy === "quick-inout";
+  const isFlip = pos.strategy === "bidask-flip";
+  // Exit commun aux deux états d'une échelle anti-dump (accumulation ET
+  // distribution) : recovery-exit. (Le Bollinger est réservé au bidask-flip —
+  // retrait 2026-08-18, voir le bloc Bollinger plus bas.)
+  const isDipLike = isDip || isFlip;
+  const isQuick = pos.strategy === "topblast";
   // Hard stop : chute > maxDailyDrop entre le prix de début de journée et maintenant.
   // bidask-dip : l'échelle EST le stop (achat de la chute jusqu'à -75%) → stop
   // élargi à -85% (protection rug seulement), pas de stop quotidien.
+  // bidask-flip : stop standard 0.4 — le flip est une position de distribution,
+  // un re-dump violent doit la sortir vite (le check flip-failed OOR ci-dessous
+  // attrape le cas structurel).
   const dayPrice = pos.day_start_price ?? pos.entry_price;
   const dayDrop = (dayPrice - price) / dayPrice;
   const stopThreshold = isDip ? 0.85 : config.hardStopDailyDrop;
   if (dayDrop > stopThreshold) {
     closePosition(pos.id, "hard-stop", `Chute de ${(dayDrop * 100).toFixed(1)}% depuis le début de journée`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+  }
+  // Flip échoué (playbook satsmonkes, setup 4) : le prix retombe sous le bas de
+  // la range de distribution → le re-dump est en cours, la position est tout en
+  // token qui se déprécie SANS fees (hors range). On sort avant la casse.
+  if (isFlip) {
+    const minPrice = binPrice(pos.min_bin_id, pos.bin_step);
+    if (price < minPrice) {
+      closePosition(
+        pos.id,
+        "flip-failed",
+        `prix ${price.toPrecision(6)} < min de la range de distribution ${minPrice.toPrecision(6)} — re-dump, flip annulé`
+      );
+      return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+    }
   }
   // Playbook quick in & out (Tikz1070) : « fast in and fast out ». Si le spike
   // de volume s'essouffle (vol 30m < 50% du seuil d'entrée), on sort — les fees
@@ -296,9 +323,11 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   }
   // Rebalance : drift trop important → ré-ouvrir centré (friction 0.3%).
   // Seuil dynamique : appris par le tuner (règles versionnées).
-  // bidask-dip : JAMAIS de rebalance (range volontairement unidirectionnel —
-  // le recentrage détruirait l'échelle anti-dump).
-  // quick-inout : range volontairement SERRÉ (1-3 bins) — pas de rebalance non
+  // bidask-dip ET bidask-flip : JAMAIS de rebalance (range volontairement
+  // unidirectionnel — le recentrage détruirait l'échelle anti-dump OU la
+  // mécanique de distribution du flip : le prix qui monte dans la range de
+  // distribution ne doit pas déclencher de recentrage+friction).
+  // topblast : range volontairement SERRÉ (10-15 bins) — pas de rebalance non
   // plus ; on PULL la liquidité dès que le prix sort du range (Tikz :
   // « i like pulling my liquidity in that situation, either reduces IL or sets
   // up a BA flip » — salarycat : pull → re-entry plus bas).
@@ -311,7 +340,7 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
       );
       return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
     }
-  } else if (!isDip && ev.drift > getRules().rebalanceThreshold) {
+  } else if (!isDipLike && ev.drift > getRules().rebalanceThreshold) {
     rebalancePosition(pos.id, price, ev.valueY * yUsd);
   }
   // Exit "quand c'est vert" (playbook LP Army / Djedje20x) : on sort dès que le
@@ -321,16 +350,18 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // rebond. Condition "sous l'eau au mark précédent" (fees incluses) pour ne
   // pas sortir à l'ouverture.
   const prevNetUnderwater = (pos.last_value_usd ?? 0) + (pos.fees_earned_usd ?? 0) + (pos.fees_claimed_usd ?? 0) < pos.deposit_usd;
-  if (isDip && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd) {
+  if (isDipLike && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd) {
     closePosition(pos.id, "recovery-exit", `PnL net ≥ 0 au rebond : value ${valueUsd.toFixed(2)}$ + fees ${fees.toFixed(2)}$ ≥ ${pos.deposit_usd}$ (fees incluses)`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
-  // Exit Bollinger (Tiagogo : cassure de la Bollinger haute en 15 min → sortie,
-  // "vert, rouge, peu importe"). Bougies ~15 min reconstruites depuis les marks
-  // du bot (monitor 15 min) : on sort quand le prix casse mean + k·σ — le pump
-  // est épuisé, on vend le rebond même si la position n'est pas revenue à
-  // l'équilibre (protège aussi contre le retournement).
-  if (isDip && config.bollingerExitEnabled) {
+  // Exit Bollinger (Tiagogo : cassure de la Bollinger haute en 15 min → sortie).
+  // RESTREINT au bidask-flip (retrait 2026-08-18, audit playbooks) : pour
+  // l'échelle d'achat (bidask-dip), le Bollinger fermait des positions à perte
+  // au pic d'un pump (-137$ sur 15 closes) — recovery-exit les ferme en gain.
+  // Pour le flip, « vendre le pic » EST la distribution : le Bollinger devient
+  // l'exit naturel de la reprise. Bougies ~15 min reconstruites depuis les
+  // marks du bot (monitor 15 min) : on sort quand le prix casse mean + k·σ.
+  if (isFlip && config.bollingerExitEnabled) {
     const prices = recentMarkPrices(pos.id, config.bollingerPeriod);
     if (prices.length >= config.bollingerMinSamples) {
       const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
@@ -345,6 +376,45 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
           `Prix ${price.toPrecision(6)} > bande haute ${upper.toPrecision(6)} (mean ${mean.toPrecision(6)} + ${config.bollingerStd}σ sur ${prices.length} marks)`
         );
         return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+      }
+    }
+  }
+  // Signal / exécution « flip » (playbook satsmonkes, setup 4) : la bidask-dip
+  // est un moteur d'accumulation ; quand la structure montre les premiers signes
+  // de retournement (« price stopping making new lows, volume drying up on the
+  // down candles, first attempt at a higher low »), on INVERSE la range
+  // au-dessus du prix pour distribuer à la reprise (fees des deux côtés).
+  // SATS_FLIP_EXECUTE=true → flipPosition exécute le cycle en paper (mesurable,
+  // réversible) ; sinon event « flip-candidate » seul (décision humaine).
+  // Le flip exige un bag partiel (≥ SATS_FLIP_MIN_TOKEN_SHARE) : flipper une
+  // position encore 100% quote = un achat directionnel, pas un LP.
+  if (isDip && config.satsFlipSignalEnabled && ev.inRange) {
+    const since = Date.now() - config.satsFlipCooldownHours * 3_600_000;
+    const already = db
+      .prepare(
+        "SELECT COUNT(*) n FROM events WHERE type IN ('flip-candidate', 'flip') AND position_id = ? AND created_at > ?"
+      )
+      .get(pos.id, since) as { n: number };
+    const prices = recentMarkPrices(pos.id, config.satsFlipLookback);
+    if (already.n === 0 && prices.length >= config.satsFlipLookback) {
+      // Fenêtre coupée en deux : la moitié récente ne refait pas de nouveau low
+      // (min récents > min précédents = higher low) et le prix rebondit au-dessus.
+      const half = Math.floor(prices.length / 2);
+      const prior = prices.slice(0, half);
+      const recent = prices.slice(half);
+      const minPrior = Math.min(...prior);
+      const minRecent = Math.min(...recent);
+      const tokenShare = ev.valueY > 0 ? (pos.amount_x * price) / ev.valueY : 0;
+      if (minRecent > minPrior && price > minRecent) {
+        if (config.satsFlipExecute && tokenShare >= config.satsFlipMinTokenShare) {
+          flipPosition(pos.id, price, ev.valueY);
+        } else {
+          logEvent(
+            "flip-candidate",
+            `↕ ${pos.name} : structure en retournement — higher low (min ${minRecent.toPrecision(6)} > ${minPrior.toPrecision(6)} sur ${prices.length} marks), prix ${price.toPrecision(6)} au-dessus du low — candidat flip (satsmonkes)${tokenShare < config.satsFlipMinTokenShare ? `, bag ${(tokenShare * 100).toFixed(0)}% en token < ${(config.satsFlipMinTokenShare * 100).toFixed(0)}% requis` : ""}`,
+            { positionId: pos.id, poolAddress: pos.pool_address }
+          );
+        }
       }
     }
   }
@@ -399,38 +469,41 @@ export function rebalancePosition(id: number, price: number, valueUsd: number): 
   );
 }
 
-/** Ajoute du quote (SOL) à une position bidask-dip ouverte — DCA quotidien
- * (playbook Djedje20x : "acheter en DCA 1×/jour et ajouter à la pool en y
- * mettant du $SOL, auto-fill activé"). L'échelle grossit, les fees aussi. */
-export function dcaPosition(id: number, usdAmount: number): { addedUsd: number; addedY: number } | null {
+/**
+ * Flip d'une bidask-dip (playbook satsmonkes, setup 4) : le moteur
+ * d'accumulation devient un moteur de distribution. La position est re-projetée
+ * single-sided TOKEN (X) AU-DESSUS du prix actuel : le bag accumulé se vend
+ * bin par bin quand le prix remonte dans la range. Le span est conservé, le
+ * prix courant marque le bas de la nouvelle range. Les fees continuent de
+ * s'accumuler pendant la reprise (enRange). Échec = re-dump sous le bas de la
+ * range → close « flip-failed » dans markPosition.
+ */
+export function flipPosition(id: number, price: number, depositY: number): void {
   const pos = getPosition(id);
-  if (!pos) return null;
-  if (pos.status !== "open") return null;
-  if (usdAmount <= 0) return null;
-  // Prix du quote (Y) en USD dérivé du dépôt : deposit_usd / amount_y.
-  const yUsd = pos.amount_y > 0 ? pos.deposit_usd / pos.amount_y : 0;
-  if (!(yUsd > 0)) return null;
-  const addedY = usdAmount / yUsd;
-  db.prepare(
-    `UPDATE paper_positions SET deposit_usd = deposit_usd + ?, amount_y = amount_y + ?
-     WHERE id = ?`
-  ).run(usdAmount, addedY, id);
-  logEvent("dca", `DCA paper sur ${pos.name} : +${usdAmount.toFixed(2)}$ de ${pos.token_y_symbol} (échelle élargie, auto-fill)`, {
-    positionId: id,
-    poolAddress: pos.pool_address,
+  if (!pos) return;
+  const activeBin = binIdFromPrice(price, pos.bin_step);
+  const span = Math.max(1, pos.max_bin_id - pos.min_bin_id);
+  const minBinId = activeBin;
+  const maxBinId = activeBin + span;
+  const liq = buildLiquidity({
+    depositY,
+    price,
+    minBinId,
+    maxBinId,
+    binStep: pos.bin_step,
+    oneSided: "x",
   });
-  return { addedUsd: usdAmount, addedY };
-}
-
-/** DCA quotidien sur toutes les positions bidask-dip ouvertes. */
-export function dcaAllOpen(): { positionId: number; addedUsd: number }[] {
-  const out: { positionId: number; addedUsd: number }[] = [];
-  for (const pos of getOpenPositions()) {
-    if (pos.strategy !== "bidask-dip") continue;
-    const r = dcaPosition(pos.id, config.dcaDailyUsd);
-    if (r) out.push({ positionId: pos.id, addedUsd: r.addedUsd });
-  }
-  return out;
+  db.prepare(
+    `UPDATE paper_positions SET strategy = 'bidask-flip', min_bin_id = ?, max_bin_id = ?,
+       entry_active_bin = ?, entry_price = ?, day_start_price = ?, last_mark_price = ?,
+       amount_x = ?, amount_y = ?
+     WHERE id = ?`
+  ).run(minBinId, maxBinId, activeBin, price, price, price, liq.x0, liq.y0, id);
+  logEvent(
+    "flip",
+    `↕ Flip ${pos.name} : accumulation → distribution — range [${minBinId}..${maxBinId}] au-dessus de ${price.toPrecision(6)}, ${liq.x0.toPrecision(4)} ${pos.token_x_symbol} à distribuer dans la reprise`,
+    { positionId: id, poolAddress: pos.pool_address }
+  );
 }
 
 /** Mark-to-market de toutes les positions ouvertes. */

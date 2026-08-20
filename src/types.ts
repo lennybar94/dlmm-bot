@@ -56,7 +56,8 @@ export type StrategyName =
   | "curve"
   | "bidask"
   | "bidask-dip"
-  | "quick-inout";
+  | "bidask-flip" // état post-flip d'une bidask-dip (distribution au-dessus du prix)
+  | "topblast"; // spike single-sided SOL (satsmonkes setup 1, ex-quick-inout Tikz)
 
 export interface StrategyPreset {
   name: StrategyName;
@@ -75,6 +76,9 @@ export interface StrategyHint {
   vol_24h: number; // volatilité réalisée journalière (0.12 = 12%)
   dipTarget?: number; // couverture de dump cible pour bidask-dip (0.9 = -90%)
   drawdown24h?: number; // drawdown vs high 24h à l'entrée (0.35 = -35% sous le high)
+  // Ancre Fibonacci (playbook satsmonkes, setup 2) : swing ATH→low et niveaux
+  // 0.5/0.786 utilisés pour placer la range bidask-dip par structure.
+  fibZone?: { high: number; low: number; level50: number; level786: number };
 }
 
 export interface OpportunityScore {

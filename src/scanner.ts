@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isFeePrinterCandidate, isWatchlisted, DEFAULT_STRATEGY } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, fibSwingFromCandles, fibRetraceLevel, DEFAULT_STRATEGY } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -87,12 +87,12 @@ export function scorePool(
   const volStability = Math.min(1, p.volume_1h / Math.max(1, p.volume_24h / 24));
   const tvlScore = Math.min(1, Math.sqrt(p.tvl / 500_000));
   const farmBonus = p.farm_apr > 10 ? rules.farmBonus : 0;
-  // Stratégies tolérantes à la σ (bidask-dip, quick-inout) : l'échelle
+  // Stratégies tolérantes à la σ (bidask-dip, topblast) : l'échelle
   // anti-dump et la sortie rapide SONT les protections contre la volatilité —
   // pas de pénalité (cohérent avec leur exemption du plafond σ au scan). La
   // pénalité ne s'applique qu'aux stratégies spot/curve où l'IL détruit les
   // gains. (Résout la contradiction scan-admet/score-pénalise.)
-  const sigmaTolerant = strategy === "bidask-dip" || strategy === "quick-inout";
+  const sigmaTolerant = strategy === "bidask-dip" || strategy === "topblast";
   const volPenalty = vol24h > 1.2 && !sigmaTolerant ? rules.volPenalty : 0; // volatilité extrême
 
   let score =
@@ -113,8 +113,10 @@ export function scorePool(
   // feeDecay = rythme horaire actuel / rythme moyen 24h (≈1 = durable).
   if (p.fee_tvl_ratio_24h >= 0.05 && p.fee_tvl_ratio_1h != null) {
     const feeDecay = (24 * p.fee_tvl_ratio_1h) / Math.max(0.0001, p.fee_tvl_ratio_24h);
-    if (feeDecay >= 1.2) signals.push(`fees en accélération (1h = ${(feeDecay * 100).toFixed(0)}% du rythme 24h)`);
-    else if (feeDecay >= 0.6) signals.push(`fees durables (rythme 1h ≈ ${(feeDecay * 100).toFixed(0)}% de la moyenne 24h)`);
+    // Retiré 2026-08-20 (audit signaux, ROI 0.36% < baseline 0.90% sur 18 pos) :
+    // le badge « fees en accélération » ne discriminait pas — l'accélération 1h
+    // ne prédisait pas de meilleures entrées. Seuls durables/déclin sont gardés.
+    if (feeDecay >= 0.6) signals.push(`fees durables (rythme 1h ≈ ${(feeDecay * 100).toFixed(0)}% de la moyenne 24h)`);
     else signals.push(`⚠️ fees en déclin (1h = ${(feeDecay * 100).toFixed(0)}% du rythme 24h) — le yield s'essouffle`);
   }
   // Profil réflexif (Lamsito_eth/$NET) : APR délirant + σ extrême = ponzinomics
@@ -124,19 +126,21 @@ export function scorePool(
     signals.push(`⚠️ profil réflexif (ponzinomics) : APR ${p.fee_apr_24h.toFixed(0)}% + σ ${(vol24h * 100).toFixed(0)}%/j — unwind violent si la demande meurt`);
   if (p.launchpad) signals.push(`launchpad: ${p.launchpad}`);
   if (p.farm_apr > 10) signals.push(`farm APR ${p.farm_apr.toFixed(0)}%`);
-  if (vol24h > 0.5) signals.push(`volatilité élevée (${(vol24h * 100).toFixed(0)}%/j)`);
+  // Retiré 2026-08-20 (audit signaux, ROI 0.28% < baseline 0.90% sur 137 pos) :
+  // « volatilité élevée » était quasi-constant (le bot ne sélectionne QUE des
+  // pools volatils) → zéro info discriminante sur les opportunités affichées.
   // Playbook quick in & out (LP Army) : volume ≥ 30k$/min ≈ ≥ 900k$/30min
   if (p.volume_1h >= 900_000) signals.push("volume burst (≥30k$/min sur 1h)");
   // Playbook quick in & out (Tikz1070) : mesure 30 MIN exacte (l'API l'expose)
   // — spike ≥ 30K$/min sur la fenêtre de trading réelle du playbook.
   if (p.volume_30m >= config.quickMinVolume30m)
-    signals.push(`⚡ quick in & out (Tikz) : vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$ (≥30K$/min)`);
+    signals.push(`⚡ top blast (satsmonkes) : vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$ (≥30K$/min)`);
   if (isQuickInOutCandidate(p))
-    signals.push(`pool récent (${p.pool_age_days.toFixed(1)} j) + spike — edge « nouveau pool » (Tikz)`);
-  // Playbook fee printers (0xmiir) : les tokens nommés (watchlist) sont les
-  // meilleurs encaisseurs de frais du marché — badge visible.
-  if (isWatchlisted(p.token_x.symbol))
-    signals.push(`🖨️ fee printer watchlist (0xmiir) : ${p.token_x.symbol} — fees/TVL 24h ${p.fee_tvl_ratio_24h.toFixed(2)}%`);
+    signals.push(`pool récent (${p.pool_age_days.toFixed(1)} j) + spike — première jambe (satsmonkes/Tikz)`);
+  // Retiré 2026-08-20 (audit signaux, ROI −0.12% < baseline 0.90% sur 34 pos) :
+  // le badge « 🖨️ fee printer watchlist » corrélait à des entrées SOUS la
+  // moyenne (dont MANLET −205$). La logique d'exemption du plafond maxVol24h
+  // (isFeePrinterCandidate) est conservée — seul le badge d'affichage disparaît.
   // « Les fees trouvent leur chemin » (0xmiir) : tokens lancés ailleurs (ex.
   // pump.fun) qui font un volume majeur sur le DLMM Meteora — le volume migre
   // vers le pool de frais.
@@ -210,18 +214,21 @@ export async function runScan(): Promise<ScanResult> {
         continue;
       }
       // Priorité de playbook par ÂGE (ressenti des users X, résout le
-      // recouvrement quick-inout / bidask-dip) :
-      // - pool RÉCENT (≤ 2 j) en spike ≥ 30K$/min → quick-inout (Tikz : chasser
-      //   le nouveau pool tôt, position serrée, sortie rapide)
+      // recouvrement spike / bidask-dip) :
+      // - pool RÉCENT (≤ 2 j) en spike ≥ 30K$/min → top blast (satsmonkes,
+      //   ex-quick-inout Tikz : chasser le nouveau pool tôt, sortie rapide)
       // - pool ÉTABLI avec gros volume + gros fees/TVL → bidask-dip (0xmiir :
       //   les fee printers persistants — échelle anti-dump sur rebond)
-      // Un pool jeune en spike qui est AUSSI fee printer → quick-inout prime
-      // (le spike est la fenêtre de trading, pas l'échelle).
+      // Top blast (satsmonkes setup 1) : spike ≥ 30K$/min sur pool récent
+      // (≤ 2 j) à frais qui tournent = la première jambe haussière →
+      // single-sided SOL, 10-15 bins, sortie rapide (volume fade / OOR → pull).
+      // Prime sur le pipeline bidask-dip (le spike est la fenêtre de trading,
+      // pas l'échelle).
       let strategy = strategyForVolatility(vol, rules);
-      if (quick) strategy = "quick-inout";
+      if (quick) strategy = "topblast";
       const { score, signals } = scorePool(p, vol, rules, strategy);
-      if (quick && feePrinter)
-        signals.push("⚡ pool jeune en spike + fee printer — quick-inout prime (Tikz)");
+      if (quick)
+        signals.push("⚡ top blast (satsmonkes) : première jambe — SOL-only 10-15 bins, fees en quelques minutes");
       // Trending court (GMGN/DucatelRomain03) : delta de volume entre scans =
       // volume échangé pendant l'intervalle (≈ 5 min avec un scan rapproché).
       // Voir le démarrage tôt, avant que la fenêtre 30m de l'API ne confirme.
@@ -252,10 +259,28 @@ export async function runScan(): Promise<ScanResult> {
         });
         continue;
       }
-      if (strategy === "bidask-dip" && drawdown >= config.minDipDrawdown) {
-        signals.push(`rebond après dump (drawdown ${(drawdown * 100).toFixed(0)}% vs high 24h)`);
+      // Retiré 2026-08-20 (audit signaux, ROI 0.31% < baseline 0.90% sur 130
+      // pos) : « rebond après dump » était quasi-constant (84% des positions,
+      // c'est un filtre d'entrée bidask-dip, pas un signal) → badge retiré,
+      // le filtre minDipDrawdown et le hint drawdown24h restent actifs.
+      // Ancre Fibonacci (playbook satsmonkes, setup 2) : où le prix se situe
+      // dans le retracement du swing ATH→low. Dans la zone 0.5-0.786 → le
+      // sweet spot (« la majorité des buyers ré-entrent ici »). Sinon, le
+      // niveau de retracement pour suivre l'approche de la zone.
+      if (strategy === "bidask-dip") {
+        const fib = fibSwingFromCandles(candles);
+        if (fib) {
+          const lvl = fibRetraceLevel(fib, p.current_price);
+          // Retiré 2026-08-20 (audit signaux) : le badge « 📐 swing Fib » hors
+          // zone (14 pos, PnL moy 6.7$ < 15.8$ baseline) était du bruit —
+          // seul le sweet spot 🎯 zone Fib (ROI à surveiller, n=6) est gardé.
+          if (lvl >= config.satsFibZoneLo && lvl <= config.satsFibZoneHi)
+            signals.push(
+              `🎯 zone Fib ${(config.satsFibZoneLo * 100).toFixed(0)}-${(config.satsFibZoneHi * 100).toFixed(0)} (satsmonkes) : retrace ${(lvl * 100).toFixed(0)}% du swing ATH→low — sweet spot ré-entrée`
+            );
+        }
       }
-      const hint = buildStrategyHint(p, activeBinId, vol, strategy);
+      const hint = buildStrategyHint(p, activeBinId, vol, strategy, p.current_price, candles);
       if (hint.dipTarget !== undefined) hint.drawdown24h = drawdown;
       opportunities.push({ pool: p, vol_24h: vol, score, signals, strategyHint: hint });
     } catch (err) {

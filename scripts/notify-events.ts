@@ -8,12 +8,16 @@ import { getTelegramCreds, sendTelegram } from "../src/telegram.js";
 // Types d'événements qui méritent une alerte (le bruit scan/monitor est exclu).
 // Les exits (bollinger-exit, recovery-exit, hard-stop) sont loggés en type "close"
 // avec la raison dans le message → "close" couvre tout.
+// flip-candidate / flip (playbook satsmonkes) : structure en retournement sur
+// une bidask-dip — candidat au flip (décision humaine) ou flip exécuté (paper).
 const ALERT_TYPES = new Set([
   "open",
   "close",
   "rebalance",
   "claim",
   "dca",
+  "flip-candidate",
+  "flip",
 ]);
 
 export async function notifyEvents(): Promise<number> {
@@ -49,7 +53,8 @@ export async function notifyEvents(): Promise<number> {
       e.type === "close" || e.type === "hard-stop" ? "🔴" :
       e.type === "rebalance" ? "🔄" :
       e.type === "claim" ? "💰" :
-      e.type === "dca" ? "📈" : "⚡";
+      e.type === "dca" ? "📈" :
+      e.type === "flip-candidate" || e.type === "flip" ? "↕" : "⚡";
     const ts = new Date(e.created_at).toISOString().slice(11, 16);
     const ok = await sendTelegram(creds.token, creds.chatId, `${icon} [${ts}] DLMM ${e.type}: ${e.message}`);
     if (ok) sent++;
