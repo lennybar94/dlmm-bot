@@ -1,9 +1,13 @@
 // Ouvre des positions paper sur les meilleures opportunités du dernier scan.
 // Usage : `npm run open:paper` (top MAX_POSITIONS) ou `--limit N` / `--strategy spot-wide`
+// Mode RÉEL (REAL_MODE=true dans .env) : ouvre de vraies positions via src/real.ts
+// et les enregistre dans real_positions (pilote — surveillance manuelle des exits).
 import { db } from "../src/db.js";
 import { config } from "../src/config.js";
 import { runScan } from "../src/scanner.js";
 import { openPaperPosition, getOpenPositions } from "../src/paper.js";
+import { depositForPool } from "../src/strategies.js";
+import { realOpenPosition } from "../src/real.js";
 
 const args = process.argv.slice(2);
 const limitArg = args.find((a) => a.startsWith("--limit="));
@@ -46,8 +50,29 @@ for (const opp of scan.opportunities) {
     }
     topblastSlots--;
   }
-  const r = openPaperPosition(opp);
-  console.log(`  Ouvert #${r.positionId}: ${opp.pool.name} — ${opp.strategyHint.strategy} (score ${opp.score.toFixed(1)})`);
+  if (config.realMode) {
+    // ---- PILOTE RÉEL : ouverture réelle + enregistrement local ----
+    const dep = depositForPool(opp.pool);
+    const r = await realOpenPosition(opp, dep);
+    db.prepare(
+      `INSERT INTO real_positions
+       (opened_at, pool_address, name, strategy, deposit_usd, position_pubkey, sig,
+        min_bin_id, max_bin_id, bin_step, entry_price, token_x_symbol, token_y_symbol,
+        amount_x, amount_y, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`
+    ).run(
+      Date.now(), opp.pool.address, opp.pool.name, opp.strategyHint.strategy, dep,
+      r.positionPubkey, r.sig, r.minBinId, r.maxBinId, opp.pool.bin_step, r.entryPrice,
+      opp.pool.token_x.symbol ?? null, opp.pool.token_y.symbol ?? null, r.amountX, r.amountY
+    );
+    console.log(
+      `  Ouvert RÉEL #${r.positionPubkey.slice(0, 8)}: ${opp.pool.name} — ${opp.strategyHint.strategy} ` +
+        `(dep ${dep.toFixed(0)}$ · sig ${r.sig.slice(0, 10)}…)`
+    );
+  } else {
+    const r = openPaperPosition(opp);
+    console.log(`  Ouvert #${r.positionId}: ${opp.pool.name} — ${opp.strategyHint.strategy} (score ${opp.score.toFixed(1)})`);
+  }
   openAddresses.add(opp.pool.address);
   openTokens.add(tokenKey);
   opened++;

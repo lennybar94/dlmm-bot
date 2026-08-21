@@ -1,30 +1,32 @@
-// Adapter MODE RÉEL — verrouillé par la garde d'exécution.
-// Le chemin par défaut du bot est PAPER ONLY ; ces fonctions ne s'exécutent que si
-// REAL_MODE=true ET REAL_CONFIRM=CONFIRMED-REAL-MODE dans .env (déconseillé sans revue).
-// NOTE SDK : @meteora-ag/dlmm v1.9.x s'importe en CJS (createRequire) — l'import ESM
-// casse sur @coral-xyz/anchor (ERR_UNSUPPORTED_DIR_IMPORT). API : create() à la racine,
-// plus de classe DLMM statique. Testé en lecture seule sur mainnet (getActiveBin OK).
+// Adapter MODE RÉEL — verrouillé par la garde d'exécution (assertPaperOnly).
+// Réécrit le 21/08/2026 (revue REAL-ADAPTER-REVIEW-20260821.md) :
+//  - montants calculés par la MÊME math que le paper (buildLiquidity + presets),
+//    convertis en lamports avec les decimals réels des deux tokens
+//  - oneSided respecté (topblast = single-sided)
+//  - StrategyType issu du preset (sdkStrategy), plus de fallback Spot silencieux
+//  - fermeture (removeLiquidity + claim) et claim ajoutés
+//  - priority fee + retry
+// NOTE SDK : @meteora-ag/dlmm v1.9.x s'importe en CJS (createRequire) — l'import
+// ESM casse sur @coral-xyz/anchor (ERR_UNSUPPORTED_DIR_IMPORT). API : create() à
+// la racine. Testé en lecture seule sur mainnet (getActiveBin OK).
 
 import { createRequire } from "node:module";
 import { assertPaperOnly, config } from "./config.js";
-import type { StrategyHint } from "./types.js";
+import type { OpportunityScore } from "./types.js";
+import { STRATEGY_PRESETS, depositForPool } from "./strategies.js";
+import { buildLiquidity, estimateYUsd } from "./paper.js";
+import { binIdFromPrice } from "./strategies.js";
 
 const require = createRequire(import.meta.url);
 
 interface SdkBundle {
   Connection: new (url: string, commitment?: string) => unknown;
-  Keypair: {
-    fromSecretKey: (bytes: Uint8Array) => unknown;
-    generate: () => unknown;
-  };
+  Keypair: { fromSecretKey: (bytes: Uint8Array) => unknown; generate: () => unknown };
   PublicKey: new (s: string) => unknown;
   sendAndConfirmTransaction: (...args: unknown[]) => Promise<string>;
-  createPool: (
-    conn: unknown,
-    address: unknown,
-    opts: { cluster: string }
-  ) => Promise<Record<string, unknown>>;
+  createPool: (conn: unknown, address: unknown, opts: { cluster: string }) => Promise<Record<string, unknown>>;
   StrategyType: Record<string, number>;
+  ComputeBudgetProgram: { setComputeUnitPrice: (args: { microLamports: number }) => unknown };
 }
 
 function loadSdk(): SdkBundle {
@@ -37,86 +39,240 @@ function loadSdk(): SdkBundle {
     sendAndConfirmTransaction: solana.sendAndConfirmTransaction as SdkBundle["sendAndConfirmTransaction"],
     createPool: dlmm.create as SdkBundle["createPool"],
     StrategyType: dlmm.StrategyType as SdkBundle["StrategyType"],
+    ComputeBudgetProgram: solana.ComputeBudgetProgram as SdkBundle["ComputeBudgetProgram"],
   };
 }
 
-export interface RealOpenArgs {
-  poolAddress: string;
-  depositUsd: number;
-  hint: StrategyHint;
-  strategyName: string;
-  tokenXDecimals: number;
-  tokenYDecimals: number;
+// Decimals des mints : Data API d'abord (pool.token_x.decimals), sinon RPC
+// (getParsedAccountInfo) avec cache. Fallback 9 (SOL-like) en dernier recours.
+const mintDecimalsCache = new Map<string, number>();
+async function decimalsFor(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  connection: any,
+  mint: string,
+  fallback: number | undefined
+): Promise<number> {
+  if (fallback != null && Number.isFinite(fallback)) return fallback;
+  if (mintDecimalsCache.has(mint)) return mintDecimalsCache.get(mint)!;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const info = (await connection.getParsedAccountInfo(new (loadSdk().PublicKey)(mint))) as any;
+    const d = info?.value?.data?.parsed?.info?.decimals;
+    if (typeof d === "number") {
+      mintDecimalsCache.set(mint, d);
+      return d;
+    }
+  } catch {
+    /* fallback ci-dessous */
+  }
+  return 9;
+}
+
+// Retry sur envoi de transaction (congestion Solana) : 3 essais, 2 s d'écart.
+async function sendWithRetry(
+  send: SdkBundle["sendAndConfirmTransaction"],
+  connection: unknown,
+  tx: unknown,
+  signers: unknown[],
+  attempts = 3
+): Promise<string> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await send(connection, tx, signers);
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  throw lastErr;
+}
+
+export interface RealOpenResult {
+  sig: string;
+  positionPubkey: string;
+  amountX: number; // en unités token (décimales incluses)
+  amountY: number;
+  minBinId: number;
+  maxBinId: number;
+  entryPrice: number;
 }
 
 /**
- * Ouvre une position réelle sur un pool DLMM. GARDÉ : ne s'exécute qu'en mode réel confirmé.
- * Montants en unités brutes (lamports) — decimals attendus de la Data API.
+ * Ouvre une position RÉELLE sur un pool DLMM.
+ * Montants : même math que le paper (buildLiquidity), convertie en lamports.
+ * Range : récentrée sur le bin actif on-chain (échelle SDK ≠ Data API).
  */
-export async function realOpenPosition(args: RealOpenArgs): Promise<string> {
+export async function realOpenPosition(opp: OpportunityScore, depositUsd?: number): Promise<RealOpenResult> {
   assertPaperOnly("realOpenPosition");
-  if (!config.walletPrivateKey) throw new Error("WALLET_PRIVATE_KEY manquant");
+  if (!config.walletPrivateKey) throw new Error("WALLET_PRIVATE_KEY manquant dans .env");
 
-  const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, StrategyType } =
-    loadSdk();
+  const sdk = loadSdk();
+  const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, StrategyType, ComputeBudgetProgram } = sdk;
   const connection = new Connection(config.rpcUrl, "confirmed");
-  const user = Keypair.fromSecretKey(
-    Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64"))
-  );
-  const pool = await createPool(connection, new PublicKey(args.poolAddress), {
-    cluster: "mainnet-beta",
+  const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
+
+  const p = opp.pool;
+  const hint = opp.strategyHint;
+  const preset = STRATEGY_PRESETS[hint.strategy] ?? STRATEGY_PRESETS["spot-spread"];
+
+  // 1) Mêmes calculs que le paper (math validée par le paper)
+  const yUsd = estimateYUsd(p);
+  const entryPrice = p.current_price;
+  const depositUsdFinal = depositUsd ?? depositForPool(p);
+  if (!Number.isFinite(depositUsdFinal) || depositUsdFinal <= 0) throw new Error("dépôt invalide");
+  const depositY = depositUsdFinal / yUsd;
+  const activeBinIdData = binIdFromPrice(entryPrice, p.bin_step);
+  const minBinIdHint = hint.minBinId ?? activeBinIdData - 10;
+  const maxBinIdHint = hint.maxBinId ?? activeBinIdData + 10;
+  const liq = buildLiquidity({
+    depositY,
+    price: entryPrice,
+    minBinId: minBinIdHint,
+    maxBinId: maxBinIdHint,
+    binStep: p.bin_step,
+    oneSided: preset.oneSided,
   });
 
+  // 2) Montants bruts (lamports) avec les decimals réels des deux tokens
+  const decX = await decimalsFor(connection, p.token_x.address, p.token_x.decimals);
+  const decY = await decimalsFor(connection, p.token_y.address, p.token_y.decimals);
+  const rawX = preset.oneSided === "y" ? 0n : BigInt(Math.floor((liq.x0 ?? 0) * 10 ** decX));
+  const rawY = preset.oneSided === "x" ? 0n : BigInt(Math.floor((liq.y0 ?? 0) * 10 ** decY));
+  if (rawX <= 0n && rawY <= 0n) throw new Error("montants nuls (math) — position non ouverte");
+  if (rawX < 0n || rawY < 0n) throw new Error("montants négatifs (math) — position non ouverte");
+
+  // 3) Pool + bin actif on-chain (échelle SDK)
+  const pool = await createPool(connection, new PublicKey(p.address), { cluster: "mainnet-beta" });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const activeBin = await (pool as any).getActiveBin();
-  // ⚠️ Les bin ids de la Data API (échelle prix-par-token) diffèrent des ids
-  // on-chain du SDK (échelle par-lamport) : on recentre donc le range sur
-  // activeBin.binId avec l'écart de la stratégie (hint.binsPerSide).
-  const perSide = Math.max(1, Math.round((args.hint.maxBinId - args.hint.minBinId) / 2) || 1);
-  const minBinId = activeBin.binId - perSide;
-  const maxBinId = activeBin.binId + perSide;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pricePerToken = (pool as any).fromPricePerLamport(Number(activeBin.price));
-  const yUsd = args.depositUsd / 2;
-  const amountY = Math.floor((yUsd * 10 ** args.tokenYDecimals) / pricePerToken) || 1;
-  const amountX = Math.floor(yUsd * 10 ** args.tokenXDecimals);
+  // Range on-chain : les ids SDK ≠ ids Data API (échelle différente), mais le
+  // NOMBRE de bins pour un même écart % est invariant. On réplique la STRUCTURE
+  // du hint :
+  //  - bidask-dip  : accumulation SOUS le prix → [activeBin − spread, activeBin]
+  //  - bidask-flip : distribution AU-DESSUS      → [activeBin, activeBin + spread]
+  //  - autres (spot/curve/topblast) : symétrique → activeBin ± spread/2
+  const spread = Math.max(1, Math.round(maxBinIdHint - minBinIdHint));
+  let minBinId: number;
+  let maxBinId: number;
+  if (hint.strategy === "bidask-dip") {
+    minBinId = activeBin.binId - spread;
+    maxBinId = activeBin.binId;
+  } else if (hint.strategy === "bidask-flip") {
+    minBinId = activeBin.binId;
+    maxBinId = activeBin.binId + spread;
+  } else {
+    const perSide = Math.max(1, Math.round(spread / 2));
+    minBinId = activeBin.binId - perSide;
+    maxBinId = activeBin.binId + perSide;
+  }
+  const strategyType = StrategyType[preset.sdkStrategy] ?? StrategyType.Spot;
 
-  const positionPubKey = Keypair.generate();
+  // 4) Position + transaction (priority fee + retry)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const positionPubKey = (Keypair.generate() as any);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tx = await (pool as any).initializePositionAndAddLiquidityByStrategy({
-    positionPubKey: (positionPubKey as { publicKey: unknown }).publicKey,
-    user: (user as { publicKey: unknown }).publicKey,
-    totalXAmount: amountX,
-    totalYAmount: amountY,
-    strategy: {
-      minBinId,
-      maxBinId,
-      strategyType: StrategyType[args.strategyName] ?? StrategyType.Spot,
-    },
+    positionPubKey: positionPubKey.publicKey,
+    user: (user as any).publicKey,
+    totalXAmount: rawX,
+    totalYAmount: rawY,
+    strategy: { minBinId, maxBinId, strategyType },
   });
+  try {
+    const ix = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 });
+    if (tx?.instructions?.unshift) tx.instructions.unshift(ix);
+  } catch {
+    /* priority fee optionnel — non bloquant */
+  }
+  const sig = await sendWithRetry(sendAndConfirmTransaction, connection, tx, [user, positionPubKey]);
 
-  const sig = await sendAndConfirmTransaction(connection, tx, [user, positionPubKey]);
-  return sig;
+  return {
+    sig,
+    positionPubkey: positionPubKey.publicKey.toBase58(),
+    amountX: Number(rawX) / 10 ** decX,
+    amountY: Number(rawY) / 10 ** decY,
+    minBinId,
+    maxBinId,
+    entryPrice,
+  };
+}
+
+/**
+ * Ferme une position RÉELLE : removeLiquidity (bps, défaut 10000 = tout) + claim
+ * dans la même transaction. C'est le kill-switch manuel du pilote.
+ */
+export async function realClosePosition(poolAddress: string, positionPubkey: string, bps = 10000): Promise<string> {
+  assertPaperOnly("realClosePosition");
+  const sdk = loadSdk();
+  const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, ComputeBudgetProgram } = sdk;
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
+  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: "mainnet-beta" });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { userPositions } = await (pool as any).getPositionsByUserAndLbPair((user as any).publicKey);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pos = userPositions.find((x: any) => x.publicKey.toBase58() === positionPubkey);
+  if (!pos) throw new Error(`position ${positionPubkey} introuvable sur le pool ${poolAddress}`);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tx = await (pool as any).removeLiquidity({
+    position: pos,
+    user: (user as any).publicKey,
+    bps,
+    shouldClaimAndClose: true,
+  });
+  try {
+    const ix = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 });
+    if (tx?.instructions?.unshift) tx.instructions.unshift(ix);
+  } catch {
+    /* non bloquant */
+  }
+  return await sendWithRetry(sendAndConfirmTransaction, connection, tx, [user]);
+}
+
+/** Claim des frais accumulés d'une position réelle. */
+export async function realClaimRewards(poolAddress: string, positionPubkey: string): Promise<string> {
+  assertPaperOnly("realClaimRewards");
+  const sdk = loadSdk();
+  const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, ComputeBudgetProgram } = sdk;
+  const connection = new Connection(config.rpcUrl, "confirmed");
+  const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
+  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: "mainnet-beta" });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { userPositions } = await (pool as any).getPositionsByUserAndLbPair((user as any).publicKey);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pos = userPositions.find((x: any) => x.publicKey.toBase58() === positionPubkey);
+  if (!pos) throw new Error(`position ${positionPubkey} introuvable sur le pool ${poolAddress}`);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tx = await (pool as any).claimAllRewardsByPosition({ position: pos, user: (user as any).publicKey });
+  try {
+    const ix = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 });
+    if (tx?.instructions?.unshift) tx.instructions.unshift(ix);
+  } catch {
+    /* non bloquant */
+  }
+  return await sendWithRetry(sendAndConfirmTransaction, connection, tx, [user]);
 }
 
 /** Récupère les positions réelles d'un wallet sur un pool (lecture seule). */
 export async function realGetPositions(poolAddress: string): Promise<unknown[]> {
-  const { Connection, Keypair, PublicKey, createPool } = loadSdk();
+  const sdk = loadSdk();
+  const { Connection, Keypair, PublicKey, createPool } = sdk;
   const connection = new Connection(config.rpcUrl, "confirmed");
-  const user = Keypair.fromSecretKey(
-    Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64"))
-  );
-  const pool = await createPool(connection, new PublicKey(poolAddress), {
-    cluster: "mainnet-beta",
-  });
+  const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
+  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: "mainnet-beta" });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { userPositions } = await (pool as any).getPositionsByUserAndLbPair(
-    (user as { publicKey: unknown }).publicKey
-  );
+  const { userPositions } = await (pool as any).getPositionsByUserAndLbPair((user as any).publicKey);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (userPositions as any[]).map((p: any) => ({
     address: p.publicKey.toBase58(),
     lowerBinId: p.positionData.lowerBinId,
     upperBinId: p.positionData.upperBinId,
+    totalXAmount: p.positionData.totalXAmount?.toString?.() ?? null,
+    totalYAmount: p.positionData.totalYAmount?.toString?.() ?? null,
   }));
 }

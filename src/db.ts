@@ -90,6 +90,30 @@ CREATE TABLE IF NOT EXISTS paper_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON paper_positions(status);
 
+CREATE TABLE IF NOT EXISTS real_positions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opened_at INTEGER NOT NULL,
+  pool_address TEXT NOT NULL,
+  name TEXT,
+  strategy TEXT NOT NULL,
+  deposit_usd REAL NOT NULL,
+  position_pubkey TEXT NOT NULL,
+  sig TEXT,
+  min_bin_id INTEGER,
+  max_bin_id INTEGER,
+  bin_step INTEGER,
+  entry_price REAL,
+  token_x_symbol TEXT,
+  token_y_symbol TEXT,
+  amount_x REAL,
+  amount_y REAL,
+  status TEXT DEFAULT 'open',
+  closed_at INTEGER,
+  close_reason TEXT,
+  last_value_usd REAL,
+  last_mark_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS pnl_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   taken_at INTEGER NOT NULL,

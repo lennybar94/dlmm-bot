@@ -8,6 +8,8 @@
     "scan:pools": "tsx scripts/scan-pools.ts",
     "open:paper": "tsx scripts/open-paper.ts",
     "update:pnl": "tsx scripts/update-pnl.ts",
+    "real:open": "tsx scripts/open-paper.ts",
+    "real:close": "tsx scripts/real-close.ts",
     "monitor": "tsx scripts/monitor.ts",
     "report:daily": "tsx scripts/report-daily.ts",
     "review:outcomes": "tsx scripts/review-outcomes.ts",
