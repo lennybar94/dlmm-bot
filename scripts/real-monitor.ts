@@ -70,27 +70,51 @@ export async function realMonitor(): Promise<number> {
     const price = Number(pool.current_price);
     if (!price) continue;
 
-    // Position on-chain (montants + fees claimables)
+    // Position on-chain (montants + fees claimables) — avec retry (1) et
+    // double vérification : une erreur RÉSEAU n'est PAS une position disparue.
     let pd: Record<string, any> | null = null;
-    try {
-      const dlmm = await createPool(connection, new PublicKey(pos.pool_address), { cluster: config.cluster });
-      const res = await dlmm.getPositionsByUserAndLbPair(user.publicKey);
-      const found = res.userPositions.find(
-        (p: any) => p.publicKey.toBase58() === pos.position_pubkey
-      );
-      pd = found?.positionData ?? null;
-    } catch (e) {
-      console.warn(`[real-monitor] lecture SDK ${pos.name} : ${String(e).slice(0, 120)}`);
+    let readError = "";
+    let notFound = false;
+    for (let attempt = 1; attempt <= 2 && !readError; attempt++) {
+      try {
+        const dlmm = await createPool(connection, new PublicKey(pos.pool_address), { cluster: config.cluster });
+        const res = await dlmm.getPositionsByUserAndLbPair(user.publicKey);
+        const found = res.userPositions.find(
+          (p: any) => p.publicKey.toBase58() === pos.position_pubkey
+        );
+        if (found) {
+          pd = found.positionData;
+          break;
+        }
+        notFound = true;
+        break;
+      } catch (e) {
+        readError = String(e);
+        if (attempt === 1) await new Promise((r) => setTimeout(r, 2000));
+      }
     }
-    if (!pd) {
+    if (readError) {
+      console.warn(`[real-monitor] lecture SDK ${pos.name} (transitoire, retentera) : ${readError.slice(0, 120)}`);
+      continue;
+    }
+    if (notFound) {
+      // Vérification indépendante AVANT d'alerter : le compte existe-t-il ?
+      const acc = await connection
+        .getAccountInfo(new PublicKey(pos.position_pubkey))
+        .catch(() => null);
+      if (acc) {
+        console.warn(`[real-monitor] ${pos.name} : absent du filtre SDK mais compte présent on-chain — faux positif RPC, skip`);
+        continue;
+      }
       if (Date.now() - lastAlertAt(pos.id, "real-missing") > ALERT_COOLDOWN_MS) {
-        const msg = `⚠️ [${ts()}] DLMM RÉEL ${pos.name} : position ${pos.position_pubkey} INTROUVABLE on-chain (fermée ?) — DB marquée open, vérifier`;
+        const msg = `⚠️ [${ts()}] DLMM RÉEL ${pos.name} : position ${pos.position_pubkey} CONFIRMÉE absente on-chain (getAccountInfo) — fermée ? DB marquée open, vérifier`;
         logEvent("real-missing", msg, pos.id, pos.pool_address);
         if (creds) await sendTelegram(creds.token, creds.chatId, msg);
         alerts++;
       }
       continue;
     }
+    if (!pd) continue; // non atteignable (readError/notFound continuent) — satisfait le narrowing TS
 
     const decX = Number(pool.token_x?.decimals ?? 6);
     const decY = Number(pool.token_y?.decimals ?? 9);
