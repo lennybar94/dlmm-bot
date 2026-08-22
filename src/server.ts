@@ -69,6 +69,13 @@ async function servePool(reqUrl: URL, res: http.ServerResponse): Promise<void> {
        FROM real_positions WHERE pool_address=? ORDER BY id DESC LIMIT 3`
     )
     .all(addr);
+  const realMarks = db
+    .prepare(
+      `SELECT taken_at, value_usd, fees_usd, net_pnl_usd, in_range
+       FROM real_marks WHERE position_id IN (SELECT id FROM real_positions WHERE pool_address=?)
+       ORDER BY id ASC LIMIT 200`
+    )
+    .all(addr);
   const scan = scanRow
     ? {
         score: scanRow.score,
@@ -78,7 +85,7 @@ async function servePool(reqUrl: URL, res: http.ServerResponse): Promise<void> {
         launchpad: scanRow.launchpad,
       }
     : null;
-  const data = { pool, candles: ohlcv?.data ?? [], scan, paper, real, fetched_at: Date.now() };
+  const data = { pool, candles: ohlcv?.data ?? [], scan, paper, real, realMarks, fetched_at: Date.now() };
   poolCache.set(addr, { at: Date.now(), data });
   res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
   res.end(JSON.stringify(data));
@@ -90,6 +97,17 @@ export function startDashboard(): void {
     try {
       if (url.pathname.startsWith("/api/pool/")) {
         await servePool(url, res);
+        return;
+      }
+      if (url.pathname === "/api/real/open") {
+        const rows = db
+          .prepare(
+            `SELECT id, name, pool_address, strategy, deposit_usd, position_pubkey, status
+             FROM real_positions WHERE status='open' ORDER BY id DESC`
+          )
+          .all();
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify(rows));
         return;
       }
       if (url.pathname === "/api/dashboard.json") {

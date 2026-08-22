@@ -113,9 +113,24 @@
 </section>
 
 <script>
-const POOL = new URLSearchParams(location.search).get("addr") || "FXc1BVyNDmqwSKbYD8JwMGq5uqsUov4BCjqnATAeyARk";
-const ADDR = POOL;
+const DEFAULT_POOL = "FXc1BVyNDmqwSKbYD8JwMGq5uqsUov4BCjqnATAeyARk";
+let POOL = null;
 const $ = (id) => document.getElementById(id);
+
+// Pool par défaut : ?addr= prioritaire, sinon la position réelle ouverte,
+// sinon XST (le pool de référence du pilote).
+async function resolveAddr() {
+  const q = new URLSearchParams(location.search).get("addr");
+  if (q) return q;
+  try {
+    const r = await fetch("/api/real/open");
+    if (r.ok) {
+      const list = await r.json();
+      if (list.length) return list[0].pool_address;
+    }
+  } catch (e) { /* fallback */ }
+  return DEFAULT_POOL;
+}
 
 const f2 = (n) => (Number.isFinite(n) ? n.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 }) : "—");
 const f0 = (n) => (Number.isFinite(n) ? Math.round(n).toLocaleString("en-US") : "—");
@@ -215,13 +230,16 @@ function render(d) {
 
   // ---- Pilote réel ----
   const realOpen = (d.real || []).find((r) => r.status === "open");
+  const mk = d.realMarks || [];
   if (realOpen) {
     $("pilotNote").innerHTML =
       `<b>Position RÉELLE ouverte</b> le ${esc(realOpen.opened)} · ${esc(realOpen.strategy)} · ` +
       `<b>${usd(realOpen.deposit_usd)}</b> (${f2(realOpen.amount_y)} SOL) · range ${realOpen.min_bin_id}→${realOpen.max_bin_id} ` +
-      `· pubkey <span class="addr">${esc(realOpen.position_pubkey)}</span> · <span class="badge ok">${esc(realOpen.status)}</span>`;
+      `· pubkey <span class="addr">${esc(realOpen.position_pubkey)}</span> · <span class="badge ok">${esc(realOpen.status)}</span>` +
+      (mk.length >= 2 ? `<div style="margin-top:10px"><canvas id="pnlChart" style="width:100%;height:90px"></canvas></div>` : "");
     $("pilotKill").textContent =
       `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey ${realOpen.position_pubkey} --pool ${POOL} --bps 10000`;
+    if (mk.length >= 2) drawPnl(mk);
   } else {
     $("pilotNote").innerHTML =
       `<b>Plan (sizing satsmonkes)</b> : bidask-dip · classe par dépôt (exploratoire 500 $ / conviction 1 000 $ / major 2 000 $)` +
@@ -313,9 +331,38 @@ function drawChart(d) {
   ctx.fillText("prix " + sig(cur), W - pad.r - 92, P(cur) - 5);
 }
 
+// Courbe PnL de la position réelle (marks real_marks, 15 min)
+function drawPnl(mk) {
+  const c = document.getElementById("pnlChart");
+  if (!c) return;
+  const ctx = c.getContext("2d");
+  const DPR = window.devicePixelRatio || 1, W = c.clientWidth, H = 90;
+  c.width = W * DPR; c.height = H * DPR; ctx.scale(DPR, DPR);
+  ctx.clearRect(0, 0, W, H);
+  const pnl = mk.map((m) => m.net_pnl_usd);
+  let min = Math.min(0, ...pnl), max = Math.max(0, ...pnl);
+  if (min === max) { min = -1; max = 1; }
+  const pad = 4;
+  const X = (i) => pad + (i / (pnl.length - 1)) * (W - 2 * pad);
+  const Y = (v) => pad + (1 - (v - min) / (max - min)) * (H - 2 * pad);
+  ctx.strokeStyle = "#E7E5E4";
+  ctx.beginPath(); ctx.moveTo(pad, Y(0)); ctx.lineTo(W - pad, Y(0)); ctx.stroke();
+  ctx.strokeStyle = pnl[pnl.length - 1] >= 0 ? "#16A34A" : "#DC2626";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  pnl.forEach((v, i) => (i === 0 ? ctx.moveTo(X(i), Y(v)) : ctx.lineTo(X(i), Y(v))));
+  ctx.stroke();
+  ctx.fillStyle = pnl[pnl.length - 1] >= 0 ? "#16A34A" : "#DC2626";
+  ctx.font = "bold 10px Archivo, sans-serif";
+  const last = pnl[pnl.length - 1];
+  ctx.fillText((last >= 0 ? "+" : "") + last.toFixed(0) + "$", W - 64, Math.max(12, Y(last) - 4));
+}
+
 async function load() {
   try {
-    const r = await fetch("/api/pool/" + ADDR);
+    const addr = await resolveAddr();
+    POOL = addr;
+    const r = await fetch("/api/pool/" + addr);
     if (!r.ok) throw new Error("HTTP " + r.status);
     const d = await r.json();
     $("err").style.display = "none";
