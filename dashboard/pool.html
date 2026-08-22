@@ -67,7 +67,7 @@
 </head>
 <body>
 <header>
-  <h1 id="title">XST<span>/SOL</span></h1>
+  <h1 id="title">Pool</h1>
   <span class="addr" id="addr" title="cliquer pour copier"></span>
   <span class="meta"><span class="dot ok"></span><span id="live">chargement…</span></span>
 </header>
@@ -113,7 +113,7 @@
 </section>
 
 <script>
-const POOL = "FXc1BVyNDmqwSKbYD8JwMGq5uqsUov4BCjqnATAeyARk";
+const POOL = new URLSearchParams(location.search).get("addr") || "FXc1BVyNDmqwSKbYD8JwMGq5uqsUov4BCjqnATAeyARk";
 const ADDR = POOL;
 const $ = (id) => document.getElementById(id);
 
@@ -137,6 +137,7 @@ function kvRow(k, v, cls) { return `<div class="kv"><span class="k">${k}</span><
 
 function render(d) {
   const p = d.pool, s = d.scan, h = s?.hint || {};
+  $("title").innerHTML = esc((p.name || "POOL").split("-")[0]) + "<span>/" + esc(p.token_y?.symbol || "SOL") + "</span>";
   $("addr").textContent = POOL;
   $("live").textContent = "màj " + new Date(d.fetched_at).toLocaleTimeString("fr-FR");
 
@@ -212,12 +213,24 @@ function render(d) {
     kvRow("Volume cumulé", usd(cm?.volume)) + kvRow("Fees cumulées", usd(cm?.fees)) +
     kvRow("Prix courant", sig(p.current_price) + " " + esc(ty?.symbol) + "/" + esc(tx?.symbol));
 
-  // ---- Pilote ----
-  $("pilotNote").innerHTML =
-    `<b>Plan (sizing satsmonkes)</b> : bidask-dip · conviction 1 000 $ · échelle ${h.minBinId != null ? Math.abs(h.maxBinId - h.minBinId) : "?"} bins (≈ −${h.dipTarget != null ? (h.dipTarget * 100).toFixed(0) : "?"} % sous le prix) · entrée sur rebond après drawdown ${h.drawdown24h != null ? (h.drawdown24h * 100).toFixed(0) : "?"} %.<br>` +
-    `<b>Statut 22/08</b> : ouverture réelle tentée puis <b>rejetée à la simulation</b> — le compte position d'une échelle de 400 bins dépasse la limite Solana de realloc (10 240 octets) pour un compte créé dans la même transaction (<span class="muted">InvalidRealloc</span>). Aucune tx envoyée, solde intact.`;
-  $("pilotKill").textContent =
-    `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey <POS> --pool ${POOL} --bps 10000`;
+  // ---- Pilote réel ----
+  const realOpen = (d.real || []).find((r) => r.status === "open");
+  if (realOpen) {
+    $("pilotNote").innerHTML =
+      `<b>Position RÉELLE ouverte</b> le ${esc(realOpen.opened)} · ${esc(realOpen.strategy)} · ` +
+      `<b>${usd(realOpen.deposit_usd)}</b> (${f2(realOpen.amount_y)} SOL) · range ${realOpen.min_bin_id}→${realOpen.max_bin_id} ` +
+      `· pubkey <span class="addr">${esc(realOpen.position_pubkey)}</span> · <span class="badge ok">${esc(realOpen.status)}</span>`;
+    $("pilotKill").textContent =
+      `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey ${realOpen.position_pubkey} --pool ${POOL} --bps 10000`;
+  } else {
+    $("pilotNote").innerHTML =
+      `<b>Plan (sizing satsmonkes)</b> : bidask-dip · classe par dépôt (exploratoire 500 $ / conviction 1 000 $ / major 2 000 $)` +
+      (h.dipTarget != null ? ` · dipTarget ${(h.dipTarget * 100).toFixed(0)} %` : "") +
+      (h.drawdown24h != null ? ` · drawdown 24h ${(h.drawdown24h * 100).toFixed(0)} %` : "") +
+      `.<br><b>Limite on-chain (22/08)</b> : échelle plafonnée à 69 bins (largeur &lt; 70 exigée par le programme, realloc 10 240 o) — clamp automatique dans real.ts.`;
+    $("pilotKill").textContent =
+      `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey <POS> --pool ${POOL} --bps 10000`;
+  }
 
   // ---- Paper ----
   const rows2 = d.paper || [];
@@ -315,7 +328,6 @@ async function load() {
 }
 
 $("addr").addEventListener("click", () => { navigator.clipboard?.writeText(POOL); $("addr").textContent = "copié ✓"; setTimeout(() => ($("addr").textContent = POOL), 1200); });
-$("title").textContent = "XST/SOL — Pool";
 load();
 setInterval(load, 60000);
 </script>

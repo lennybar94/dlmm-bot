@@ -61,6 +61,14 @@ async function servePool(reqUrl: URL, res: http.ServerResponse): Promise<void> {
        FROM paper_positions WHERE pool_address=? ORDER BY opened_at DESC LIMIT 10`
     )
     .all(addr);
+  const real = db
+    .prepare(
+      `SELECT id, name, strategy, status, deposit_usd, amount_y, min_bin_id, max_bin_id,
+              position_pubkey, sig, datetime(opened_at/1000,'unixepoch') AS opened,
+              datetime(closed_at/1000,'unixepoch') AS closed
+       FROM real_positions WHERE pool_address=? ORDER BY id DESC LIMIT 3`
+    )
+    .all(addr);
   const scan = scanRow
     ? {
         score: scanRow.score,
@@ -70,7 +78,7 @@ async function servePool(reqUrl: URL, res: http.ServerResponse): Promise<void> {
         launchpad: scanRow.launchpad,
       }
     : null;
-  const data = { pool, candles: ohlcv?.data ?? [], scan, paper, fetched_at: Date.now() };
+  const data = { pool, candles: ohlcv?.data ?? [], scan, paper, real, fetched_at: Date.now() };
   poolCache.set(addr, { at: Date.now(), data });
   res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
   res.end(JSON.stringify(data));

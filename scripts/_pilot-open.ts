@@ -47,11 +47,14 @@ if (!send) {
     const yUsd = estimateYUsd(p);
     const depositY = dep / yUsd;
     const h = o.strategyHint;
+    const spreadRaw = Math.abs(h.maxBinId - h.minBinId);
+    const spread = Math.min(spreadRaw, 69); // limite on-chain (probe 22/08)
+    const cov = (1 - Math.pow(1 + p.bin_step / 10000, -spread)) * 100;
     console.log(
       `  #${p.name}  score=${o.score.toFixed(1)}  [${className(dep)} ${dep}$]` +
         `\n     ${p.address}` +
         `\n     tvl=${Math.round(p.tvl)}$ vol24=${Math.round(p.volume_24h)}$ ftr24=${(p.fee_tvl_ratio_24h ?? 0).toFixed(2)}%` +
-        `\n     dep=${dep}$ ≈ ${depositY.toFixed(4)} SOL (yUsd=${yUsd.toFixed(2)}$) · spread=${h.minBinId}→${h.maxBinId} (${h.binsPerSide}/côté)` +
+        `\n     dep=${dep}$ ≈ ${depositY.toFixed(4)} SOL (yUsd=${yUsd.toFixed(2)}$) · spread ${spread} bins (≈ −${cov.toFixed(0)} % sous le prix${spread < spreadRaw ? `, clampé depuis ${spreadRaw}` : ""})` +
         `\n     dipTarget=${(h.dipTarget ?? 0).toFixed(3)} drawdown24h=${((h.drawdown24h ?? 0) * 100).toFixed(1)}%` +
         (h.fibZone ? ` fibZone=${h.fibZone.level50}→${h.fibZone.level786}` : "") +
         `\n`

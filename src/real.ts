@@ -154,7 +154,19 @@ export async function realOpenPosition(opp: OpportunityScore, depositUsd?: numbe
   //  - bidask-dip  : accumulation SOUS le prix → [activeBin − spread, activeBin]
   //  - bidask-flip : distribution AU-DESSUS      → [activeBin, activeBin + spread]
   //  - autres (spot/curve/topblast) : symétrique → activeBin ± spread/2
-  const spread = Math.max(1, Math.round(maxBinIdHint - minBinIdHint));
+  // ⚠️ Limite on-chain (probe sim 2026-08-22) : le programme DLMM exige une
+  // largeur de position < 70 bins (InvalidPositionWidth ≥ 70, common.rs:30) ET
+  // le realloc d'un compte créé dans la même tx est plafonné à 10 240 octets
+  // (~28 o/bin → ~69 bins max). Au-delà, l'ouverture échoue À LA SIMULATION
+  // (sig vide, aucun fonds engagé). Clamp = garde réelle du pilote.
+  const MAX_REAL_POSITION_WIDTH = 69;
+  const spreadRaw = Math.max(1, Math.round(maxBinIdHint - minBinIdHint));
+  const spread = Math.min(spreadRaw, MAX_REAL_POSITION_WIDTH);
+  if (spread < spreadRaw) {
+    console.warn(
+      `⚠️ échelle réduite ${spreadRaw} → ${spread} bins (largeur max on-chain ${MAX_REAL_POSITION_WIDTH}, realloc 10 240 o)`
+    );
+  }
   let minBinId: number;
   let maxBinId: number;
   if (hint.strategy === "bidask-dip") {
