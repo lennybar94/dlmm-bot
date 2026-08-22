@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import { exportData } from "./export.js";
+import { db } from "./db.js";
 
 const root = path.resolve(config.root, "dashboard");
 const htmlPath = path.join(root, "index.html");
@@ -19,10 +20,70 @@ const MIME: Record<string, string> = {
   ".png": "image/png",
 };
 
+// Cache serveur du proxy pool (30 s) — évite de marteler la Data API (30 RPS).
+const poolCache = new Map<string, { at: number; data: unknown }>();
+const POOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const DATA_API = "https://dlmm.datapi.meteora.ag";
+
+async function servePool(reqUrl: URL, res: http.ServerResponse): Promise<void> {
+  const addr = decodeURIComponent(reqUrl.pathname.slice("/api/pool/".length));
+  if (!POOL_ADDR_RE.test(addr)) {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "adresse invalide" }));
+    return;
+  }
+  const cached = poolCache.get(addr);
+  if (cached && Date.now() - cached.at < 30_000) {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(cached.data));
+    return;
+  }
+  const [poolRes, ohlcvRes] = await Promise.all([
+    fetch(`${DATA_API}/pools/${addr}`, { signal: AbortSignal.timeout(15_000) }),
+    fetch(`${DATA_API}/pools/${addr}/ohlcv?interval=1h`, { signal: AbortSignal.timeout(15_000) }),
+  ]);
+  if (!poolRes.ok) {
+    res.writeHead(502, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: `Data API ${poolRes.status}` }));
+    return;
+  }
+  const pool = (await poolRes.json()) as Record<string, unknown>;
+  const ohlcv = (await ohlcvRes.json().catch(() => null)) as { data?: unknown[] } | null;
+  const scanRow = db
+    .prepare(
+      `SELECT score, signals, strategy_hint, pool_age_days, launchpad, current_price
+       FROM pool_scans WHERE pool_address=? ORDER BY scanned_at DESC LIMIT 1`
+    )
+    .get(addr) as { score: number; signals: string; strategy_hint: string; pool_age_days: number; launchpad: string | null; current_price: number } | undefined;
+  const paper = db
+    .prepare(
+      `SELECT datetime(opened_at/1000,'unixepoch') AS opened, strategy, deposit_usd, fees_earned_usd, status
+       FROM paper_positions WHERE pool_address=? ORDER BY opened_at DESC LIMIT 10`
+    )
+    .all(addr);
+  const scan = scanRow
+    ? {
+        score: scanRow.score,
+        signals: JSON.parse(scanRow.signals ?? "[]"),
+        hint: JSON.parse(scanRow.strategy_hint ?? "{}"),
+        age_days: scanRow.pool_age_days,
+        launchpad: scanRow.launchpad,
+      }
+    : null;
+  const data = { pool, candles: ohlcv?.data ?? [], scan, paper, fetched_at: Date.now() };
+  poolCache.set(addr, { at: Date.now(), data });
+  res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+  res.end(JSON.stringify(data));
+}
+
 export function startDashboard(): void {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     try {
+      if (url.pathname.startsWith("/api/pool/")) {
+        await servePool(url, res);
+        return;
+      }
       if (url.pathname === "/api/dashboard.json") {
         const file = config.dashboardLive
           ? await exportData()
