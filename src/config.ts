@@ -31,6 +31,10 @@ export const config = {
   dlmmApiBase: str("DLMM_API_BASE", "https://dlmm.datapi.meteora.ag"),
   rpcUrl: str("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
 
+  // Cluster Solana pour le MODE RÉEL. Défaut "devnet" = sécurité : phase test
+  // (SAFETY.md) — passer EXPLICITEMENT à "mainnet-beta" avant tout fonds réel.
+  cluster: str("CLUSTER", "devnet"),
+
   // Mode réel : STRICTEMENT désactivé par défaut.
   realMode: bool("REAL_MODE", false),
   realConfirm: str("REAL_CONFIRM", ""),

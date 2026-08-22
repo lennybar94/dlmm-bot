@@ -143,7 +143,7 @@ export async function realOpenPosition(opp: OpportunityScore, depositUsd?: numbe
   if (rawX < 0n || rawY < 0n) throw new Error("montants négatifs (math) — position non ouverte");
 
   // 3) Pool + bin actif on-chain (échelle SDK)
-  const pool = await createPool(connection, new PublicKey(p.address), { cluster: "mainnet-beta" });
+  const pool = await createPool(connection, new PublicKey(p.address), { cluster: config.cluster });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const activeBin = await (pool as any).getActiveBin();
   // Range on-chain : les ids SDK ≠ ids Data API (échelle différente), mais le
@@ -208,7 +208,7 @@ export async function realClosePosition(poolAddress: string, positionPubkey: str
   const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, ComputeBudgetProgram } = sdk;
   const connection = new Connection(config.rpcUrl, "confirmed");
   const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
-  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: "mainnet-beta" });
+  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: config.cluster });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { userPositions } = await (pool as any).getPositionsByUserAndLbPair((user as any).publicKey);
@@ -239,7 +239,7 @@ export async function realClaimRewards(poolAddress: string, positionPubkey: stri
   const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, ComputeBudgetProgram } = sdk;
   const connection = new Connection(config.rpcUrl, "confirmed");
   const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
-  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: "mainnet-beta" });
+  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: config.cluster });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { userPositions } = await (pool as any).getPositionsByUserAndLbPair((user as any).publicKey);
@@ -264,7 +264,7 @@ export async function realGetPositions(poolAddress: string): Promise<unknown[]> 
   const { Connection, Keypair, PublicKey, createPool } = sdk;
   const connection = new Connection(config.rpcUrl, "confirmed");
   const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
-  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: "mainnet-beta" });
+  const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: config.cluster });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { userPositions } = await (pool as any).getPositionsByUserAndLbPair((user as any).publicKey);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
