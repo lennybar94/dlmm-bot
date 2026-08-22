@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XST/SOL — Pool</title>
+<title>Pool — DLMM</title>
 <style>
   :root {
     --orange: #EA580C; --orange-dark: #C2410C;
@@ -153,6 +153,7 @@ function kvRow(k, v, cls) { return `<div class="kv"><span class="k">${k}</span><
 function render(d) {
   const p = d.pool, s = d.scan, h = s?.hint || {};
   $("title").innerHTML = esc((p.name || "POOL").split("-")[0]) + "<span>/" + esc(p.token_y?.symbol || "SOL") + "</span>";
+  document.title = (p.name || "POOL").split("-")[0] + "/" + (p.token_y?.symbol || "SOL") + " — Pool";
   $("addr").textContent = POOL;
   $("live").textContent = "màj " + new Date(d.fetched_at).toLocaleTimeString("fr-FR");
 
@@ -232,10 +233,23 @@ function render(d) {
   const realOpen = (d.real || []).find((r) => r.status === "open");
   const mk = d.realMarks || [];
   if (realOpen) {
+    const lastMark = mk.length ? mk[mk.length - 1] : null;
+    const stBadge = lastMark
+      ? (lastMark.in_range
+          ? `<span class="badge ok">in-range</span>`
+          : `<span class="badge warn">hors range</span>`)
+      : `<span class="badge ink">pas de mark</span>`;
+    const stPnl = lastMark
+      ? `<b class="${lastMark.net_pnl_usd >= 0 ? "pos" : "neg"}">${lastMark.net_pnl_usd >= 0 ? "+" : ""}${lastMark.net_pnl_usd.toFixed(1)}$</b>`
+      : "—";
+    const stLine = lastMark
+      ? ` · PnL ${stPnl} · fees ${lastMark.fees_usd.toFixed(2)}$ · mark ${new Date(lastMark.taken_at).toLocaleTimeString("fr-FR")}`
+      : "";
     $("pilotNote").innerHTML =
       `<b>Position RÉELLE ouverte</b> le ${esc(realOpen.opened)} · ${esc(realOpen.strategy)} · ` +
       `<b>${usd(realOpen.deposit_usd)}</b> (${f2(realOpen.amount_y)} SOL) · range ${realOpen.min_bin_id}→${realOpen.max_bin_id} ` +
-      `· pubkey <span class="addr">${esc(realOpen.position_pubkey)}</span> · <span class="badge ok">${esc(realOpen.status)}</span>` +
+      `· pubkey <span class="addr">${esc(realOpen.position_pubkey)}</span> · <span class="badge ok">${esc(realOpen.status)}</span><br>` +
+      `État : ${stBadge}${stLine}` +
       (mk.length >= 2 ? `<div style="margin-top:10px"><canvas id="pnlChart" style="width:100%;height:90px"></canvas></div>` : "");
     $("pilotKill").textContent =
       `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey ${realOpen.position_pubkey} --pool ${POOL} --bps 10000`;
