@@ -66,6 +66,30 @@ export async function buildDailyReport(): Promise<string> {
     lines.push("");
   }
 
+  // Pilote réel : une ligne par position ouverte (tri alertes 22/08 — le
+  // rapport quotidien est LE canal informatif ; Telegram ne porte que le
+  // mandataire : auto-close, hard-stop, introuvable, watchdog).
+  const realRows = db
+    .prepare(`SELECT * FROM real_positions WHERE status='open' ORDER BY id`)
+    .all() as Record<string, any>[];
+  if (realRows.length) {
+    lines.push("Pilote réel :");
+    for (const r of realRows) {
+      const mark = db
+        .prepare(
+          `SELECT net_pnl_usd, fees_usd, in_range FROM real_marks WHERE position_id=? ORDER BY id DESC LIMIT 1`
+        )
+        .get(r.id) as { net_pnl_usd: number; fees_usd: number; in_range: number } | undefined;
+      const inR = mark ? (mark.in_range ? "in-range" : "hors range") : "?";
+      const pnl = mark?.net_pnl_usd ?? 0;
+      const fees = mark?.fees_usd ?? 0;
+      lines.push(
+        `  • ${r.name} [${r.strategy}] ${Number(r.deposit_usd).toFixed(0)}$ (${Number(r.amount_y).toFixed(2)} SOL) — ${inR} — pnl ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}$ — fees ${fees.toFixed(2)}$`
+      );
+    }
+    lines.push("");
+  }
+
   const topOpps = db
     .prepare(
       `SELECT name, score, fee_apr_24h, tvl, volume_24h FROM pool_scans

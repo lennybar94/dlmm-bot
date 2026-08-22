@@ -7,6 +7,7 @@ import { db } from "../src/db.js";
 import { config } from "../src/config.js";
 import { getTelegramCreds, sendTelegram } from "../src/telegram.js";
 import { getSolPriceUsd } from "../src/export.js";
+import { realClosePosition } from "../src/real.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -43,6 +44,52 @@ function logEvent(type: string, message: string, positionId: number, poolAddress
   db.prepare(
     `INSERT INTO events (created_at, position_id, pool_address, type, message) VALUES (?, ?, ?, ?, ?)`
   ).run(Date.now(), positionId, poolAddress, type, message);
+}
+
+// Exécute le kill-switch (removeLiquidity 100 % + claim + close) quand un exit
+// DÉFINI se déclenche (REAL_EXIT_AUTO=true — validé David 22/08). Gardes :
+// valeurs plausibles avant d'agir, sig non vide avant de marquer closed,
+// cooldown 1 h sur les échecs (retentera au tick suivant, sans spam).
+// Retourne le message Telegram (confirm ou échec), ou null si silence.
+async function autoClose(
+  pos: Record<string, any>,
+  reason: string,
+  detail: string,
+  netPnlUsd: number,
+  valueUsd: number,
+  creds: { token: string; chatId: string } | null
+): Promise<string | null> {
+  const id = Number(pos.id);
+  const deposit = Number(pos.deposit_usd) || 0;
+  const manualCmd = `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey ${pos.position_pubkey} --pool ${pos.pool_address} --bps 10000`;
+  if (Date.now() - lastAlertAt(id, "real-auto-close-fail") < 3_600_000) {
+    return null; // échec récent — silencieux 1 h, retentera au prochain tick
+  }
+  const sane =
+    Number.isFinite(netPnlUsd) &&
+    Number.isFinite(valueUsd) &&
+    Math.abs(netPnlUsd) < deposit * 5 &&
+    valueUsd > deposit * 0.1 &&
+    valueUsd < deposit * 10;
+  if (!sane) {
+    const m = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : auto-close ${reason} DÉSARMÉ — valeurs anormales (pnl ${netPnlUsd.toFixed(1)}$, value ${valueUsd.toFixed(1)}$) — fermer manuellement : ${manualCmd}`;
+    logEvent("real-auto-close-fail", m, id, String(pos.pool_address));
+    return m;
+  }
+  try {
+    const sig = await realClosePosition(String(pos.pool_address), String(pos.position_pubkey), 10000);
+    if (!sig) throw new Error("sig vide — on-chain inchangé, base NON marquée closed");
+    db.prepare(
+      `UPDATE real_positions SET status='closed', closed_at=?, close_reason=?, sig=? WHERE id=?`
+    ).run(Date.now(), reason, sig, id);
+    const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
+    logEvent("real-auto-close", m, id, String(pos.pool_address));
+    return m;
+  } catch (e) {
+    const m = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : AUTO-CLOSE ${reason} ÉCHOUÉ — ${String(e).slice(0, 140)} — fermer manuellement : ${manualCmd}`;
+    logEvent("real-auto-close-fail", m, id, String(pos.pool_address));
+    return m;
+  }
 }
 
 export async function realMonitor(): Promise<number> {
@@ -165,7 +212,18 @@ export async function realMonitor(): Promise<number> {
     const dayDrop = refPrice ? (refPrice - price) / refPrice : 0;
     const stopThreshold = isDip ? 0.85 : config.hardStopDailyDrop;
     if (dayDrop > stopThreshold) {
-      if (Date.now() - lastAlertAt(pos.id, "real-hard-stop") > ALERT_COOLDOWN_MS) {
+      if (config.realExitAuto) {
+        const m = await autoClose(
+          pos,
+          "hard-stop",
+          `chute ${(dayDrop * 100).toFixed(1)}% depuis l'entrée (prix ${price.toPrecision(4)})`,
+          netPnlUsd,
+          valueUsd,
+          creds
+        );
+        if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
+        alerts++;
+      } else if (Date.now() - lastAlertAt(pos.id, "real-hard-stop") > ALERT_COOLDOWN_MS) {
         const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : HARD-STOP — chute ${(dayDrop * 100).toFixed(1)}% depuis l'entrée (prix ${price.toPrecision(4)}) — fermer : ${killCmd}`;
         logEvent("real-hard-stop", msg, pos.id, pos.pool_address);
         if (creds) await sendTelegram(creds.token, creds.chatId, msg);
@@ -177,6 +235,19 @@ export async function realMonitor(): Promise<number> {
     // 2) Recovery-exit (dip/flip — playbook Djedje20x) : PnL net ≥ 0 au rebond,
     //    fees incluses, condition « était sous l'eau au mark précédent ».
     if (isDipLike && prevUnderwater && netPnlSol >= 0) {
+      if (config.realExitAuto) {
+        const m = await autoClose(
+          pos,
+          "recovery-exit",
+          `PnL net ${netPnlUsd.toFixed(1)}$ au rebond (fees ${feesUsd.toFixed(2)}$)`,
+          netPnlUsd,
+          valueUsd,
+          creds
+        );
+        if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
+        alerts++;
+        continue; // fermée (ou échec traité) — rien d'autre ce tick
+      }
       if (Date.now() - lastAlertAt(pos.id, "real-recovery-exit") > ALERT_COOLDOWN_MS) {
         const msg = `🟢 [${ts()}] DLMM RÉEL ${pos.name} : RECOVERY-EXIT — PnL net ≥ 0 au rebond (${netPnlUsd.toFixed(1)}$ dont fees ${feesUsd.toFixed(2)}$) — fermer en gain ? ${killCmd}`;
         logEvent("real-recovery-exit", msg, pos.id, pos.pool_address);
@@ -206,21 +277,28 @@ export async function realMonitor(): Promise<number> {
         const minRecent = Math.min(...prices.slice(half));
         const tokenShare = valueSol > 0 ? (amountX * price) / valueSol : 0;
         if (minRecent > minPrior && price > minRecent) {
-          const msg = `↕ [${ts()}] DLMM RÉEL ${pos.name} : FLIP-CANDIDAT — higher low (min ${minRecent.toPrecision(4)} > ${minPrior.toPrecision(4)} sur ${prices.length} marks), prix ${price.toPrecision(4)} — bag token ${(tokenShare * 100).toFixed(0)}% (≥ ${(config.satsFlipMinTokenShare * 100).toFixed(0)}% requis) — décision humaine`;
-          logEvent("real-flip-candidate", msg, pos.id, pos.pool_address);
-          if (creds) await sendTelegram(creds.token, creds.chatId, msg);
-          alerts++;
+          // INFORMATIF (tri alertes 22/08) : log only — décision humaine
+          // possible via le dashboard, pas de Telegram.
+          logEvent(
+            "real-flip-candidate",
+            `↕ ${pos.name} : higher low (min ${minRecent.toPrecision(4)} > ${minPrior.toPrecision(4)} sur ${prices.length} marks), prix ${price.toPrecision(4)} — bag token ${(tokenShare * 100).toFixed(0)}% (≥ ${(config.satsFlipMinTokenShare * 100).toFixed(0)}% requis) — décision humaine ${killCmd}`,
+            pos.id,
+            pos.pool_address
+          );
         }
       }
     }
 
-    // 4) Claim : fees claimables on-chain au-dessus du seuil → alerte (24 h max).
+    // 4) Claim : fees claimables on-chain au-dessus du seuil → INFORMATIF
+    //    (tri alertes 22/08) : log only — le claim est inclus dans le close.
     if (feesUsd >= config.minClaimUsd) {
       if (Date.now() - lastAlertAt(pos.id, "real-claim-alert") > CLAIM_COOLDOWN_MS) {
-        const msg = `💰 [${ts()}] DLMM RÉEL ${pos.name} : ${feesUsd.toFixed(2)}$ de fees claimables on-chain (seuil ${config.minClaimUsd}$) — claim manuel (real:claim à brancher) ou inclus dans le close`;
-        logEvent("real-claim-alert", msg, pos.id, pos.pool_address);
-        if (creds) await sendTelegram(creds.token, creds.chatId, msg);
-        alerts++;
+        logEvent(
+          "real-claim-alert",
+          `💰 ${pos.name} : ${feesUsd.toFixed(2)}$ de fees claimables on-chain (seuil ${config.minClaimUsd}$) — claim manuel (real:claim à brancher) ou inclus dans le close`,
+          pos.id,
+          pos.pool_address
+        );
       }
     }
 
@@ -238,10 +316,14 @@ export async function realMonitor(): Promise<number> {
       const oorHours = (Date.now() - oorSince) / 3_600_000;
       if (oorHours > config.realOorAlertHours) {
         if (Date.now() - lastAlertAt(pos.id, "real-oor") > ALERT_COOLDOWN_MS) {
-          const msg = `⏳ [${ts()}] DLMM RÉEL ${pos.name} : HORS RANGE depuis ${oorHours.toFixed(1)} h (0 fee, PnL ${netPnlUsd.toFixed(1)}$) — laisser dormir ou fermer pour redéployer ? ${killCmd}`;
-          logEvent("real-oor", msg, pos.id, pos.pool_address);
-          if (creds) await sendTelegram(creds.token, creds.chatId, msg);
-          alerts++;
+          // INFORMATIF (tri alertes 22/08) : log only — le dashboard suit,
+          // pas de Telegram pour la position en attente.
+          logEvent(
+            "real-oor",
+            `⏳ ${pos.name} : HORS RANGE depuis ${oorHours.toFixed(1)} h (0 fee, PnL ${netPnlUsd.toFixed(1)}$) — laisser dormir ou redéployer ? ${killCmd}`,
+            pos.id,
+            pos.pool_address
+          );
         }
       }
     }
@@ -255,10 +337,14 @@ export async function realMonitor(): Promise<number> {
       const feeDecay = (24 * ftr1h) / ftr24h;
       if (feeDecay < 0.6) {
         if (Date.now() - lastAlertAt(pos.id, "real-fee-decline") > ALERT_COOLDOWN_MS) {
-          const msg = `⚠️ [${ts()}] DLMM RÉEL ${pos.name} : fees EN DÉCLIN (1h = ${(feeDecay * 100).toFixed(0)} % du rythme 24h, ftr24 ${ftr24h.toFixed(2)} %) — le yield s'essouffle, sortie anticipée ? ${killCmd}`;
-          logEvent("real-fee-decline", msg, pos.id, pos.pool_address);
-          if (creds) await sendTelegram(creds.token, creds.chatId, msg);
-          alerts++;
+          // INFORMATIF (tri alertes 22/08) : log only — le yield s'essouffle
+          // est visible sur le dashboard ; pas de Telegram.
+          logEvent(
+            "real-fee-decline",
+            `⚠️ ${pos.name} : fees EN DÉCLIN (1h = ${(feeDecay * 100).toFixed(0)} % du rythme 24h, ftr24 ${ftr24h.toFixed(2)} %) — le yield s'essouffle, sortie anticipée ? ${killCmd}`,
+            pos.id,
+            pos.pool_address
+          );
         }
       }
     }

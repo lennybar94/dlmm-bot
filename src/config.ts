@@ -59,6 +59,11 @@ export const config = {
   // Pilote réel : alerte « position en attente » après X h hors range (aucun
   // fee) — décision laisser dormir / redéployer (kill-switch).
   realOorAlertHours: num("REAL_OOR_ALERT_HOURS", 6),
+  // Pilote réel : exécution AUTOMATIQUE des exits définis (recovery-exit,
+  // hard-stop) — validé David 2026-08-22. Flip/OOR/fee-decline restent des
+  // décisions humaines. Le wrapper dlmm-realmonitor.sh pose REAL_MODE en
+  // process-local (JAMAIS dans .env — le cron open:paper doit rester paper).
+  realExitAuto: bool("REAL_EXIT_AUTO", true),
   maxDailyDrop: num("MAX_DAILY_DROP", 0.4),
 
   // Couverture de dump typée (playbook Tiagogo/MeteoraFR) : le target dépend du
