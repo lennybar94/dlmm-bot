@@ -11,8 +11,11 @@ import { realClosePosition } from "../src/real.js";
 
 const args = process.argv.slice(2);
 const argVal = (name: string) => {
-  const hit = args.find((a) => a.startsWith(`--${name}=`));
-  return hit ? hit.split("=")[1] : undefined;
+  // Supporte --key=value ET --key value (forme documentée dans l'usage).
+  const eq = args.find((a) => a.startsWith(`--${name}=`));
+  if (eq) return eq.split("=")[1];
+  const idx = args.indexOf(`--${name}`);
+  return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
 };
 const hasFlag = (name: string) => args.includes(`--${name}`);
 
@@ -68,6 +71,9 @@ console.log(`Fermeture de ${targets.length} position(s) réelle(s) (bps=${bps})�
 for (const t of targets) {
   try {
     const sig = await realClosePosition(t.pool, t.pubkey, bps);
+    if (!sig) {
+      throw new Error("aucune tx envoyée (sig vide) — on-chain inchangé, base NON marquée closed");
+    }
     console.log(`  ✅ ${t.pubkey.slice(0, 12)}… fermée — sig ${sig.slice(0, 16)}…`);
     if (t.id) {
       db.prepare(`UPDATE real_positions SET status='closed', closed_at=?, close_reason='manual-close' WHERE id=?`).run(

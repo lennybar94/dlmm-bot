@@ -207,7 +207,7 @@ export async function realOpenPosition(opp: OpportunityScore, depositUsd?: numbe
 export async function realClosePosition(poolAddress: string, positionPubkey: string, bps = 10000): Promise<string> {
   assertPaperOnly("realClosePosition");
   const sdk = loadSdk();
-  const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, ComputeBudgetProgram } = sdk;
+  const { Connection, Keypair, PublicKey, sendAndConfirmTransaction, createPool, BN } = sdk;
   const connection = new Connection(config.rpcUrl, "confirmed");
   const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
   const pool = await createPool(connection, new PublicKey(poolAddress), { cluster: config.cluster });
@@ -218,20 +218,27 @@ export async function realClosePosition(poolAddress: string, positionPubkey: str
   const pos = userPositions.find((x: any) => x.publicKey.toBase58() === positionPubkey);
   if (!pos) throw new Error(`position ${positionPubkey} introuvable sur le pool ${poolAddress}`);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tx = await (pool as any).removeLiquidity({
-    position: pos,
+  // ⚠️ Le SDK attend le PUBLIC KEY du compte position (pas l'objet position) —
+  // la doc : "position: The public key of the position account" (bug attrapé en
+  // test kill-switch : getAccountInfo(position) plantait sur l'objet).
+  // ⚠️ SDK v1.9.14 : fromBinId/toBinId n'ont PAS de défaut — sans eux,
+  // chunkBinRange(undefined, undefined) → [] → AUCUNE tx (fermeture fantôme
+  // avec sig vide, attrapée en test kill-switch). On passe le range complet
+  // depuis positionData.
+  const pd = (pos as any).positionData;
+  const txs = (await (pool as any).removeLiquidity({
+    position: (pos as any).publicKey,
     user: (user as any).publicKey,
-    bps,
+    fromBinId: Number(pd.lowerBinId),
+    toBinId: Number(pd.upperBinId),
+    bps: new BN(bps), // ⚠️ le SDK appelle bps.toNumber() — BN obligatoire
     shouldClaimAndClose: true,
-  });
-  try {
-    const ix = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 });
-    if (tx?.instructions?.unshift) tx.instructions.unshift(ix);
-  } catch {
-    /* non bloquant */
+  })) as unknown[];
+  let lastSig = "";
+  for (const tx of txs) {
+    lastSig = await sendWithRetry(sendAndConfirmTransaction, connection, tx, [user]);
   }
-  return await sendWithRetry(sendAndConfirmTransaction, connection, tx, [user]);
+  return lastSig;
 }
 
 /** Claim des frais accumulés d'une position réelle. */
