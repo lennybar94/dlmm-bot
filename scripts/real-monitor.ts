@@ -223,6 +223,45 @@ export async function realMonitor(): Promise<number> {
         alerts++;
       }
     }
+
+    // 5) Position en attente : hors range depuis trop longtemps = aucun fee —
+    //    décision « laisser dormir ou fermer pour redéployer » (le pilote ne
+    //    doit pas moisir sans travailler). Cooldown 12 h.
+    if (!inRange) {
+      const oorSince = (
+        db
+          .prepare(
+            `SELECT taken_at FROM real_marks WHERE position_id = ? AND in_range = 1 ORDER BY id DESC LIMIT 1`
+          )
+          .get(pos.id) as { taken_at: number } | undefined
+      )?.taken_at ?? pos.opened_at;
+      const oorHours = (Date.now() - oorSince) / 3_600_000;
+      if (oorHours > config.realOorAlertHours) {
+        if (Date.now() - lastAlertAt(pos.id, "real-oor") > ALERT_COOLDOWN_MS) {
+          const msg = `⏳ [${ts()}] DLMM RÉEL ${pos.name} : HORS RANGE depuis ${oorHours.toFixed(1)} h (0 fee, PnL ${netPnlUsd.toFixed(1)}$) — laisser dormir ou fermer pour redéployer ? ${killCmd}`;
+          logEvent("real-oor", msg, pos.id, pos.pool_address);
+          if (creds) await sendTelegram(creds.token, creds.chatId, msg);
+          alerts++;
+        }
+      }
+    }
+
+    // 6) Yield en déclin sur le pool de la position (playbook Lamsito) :
+    //    feeDecay = 24 × ftr_1h / ftr_24h < 0.6 → « le yield s'essouffle » →
+    //    candidat à la sortie anticipée. Même seuil que le badge du scan.
+    const ftr24h = Number(pool.fee_tvl_ratio?.["24h"] ?? 0);
+    const ftr1h = Number(pool.fee_tvl_ratio?.["1h"] ?? 0);
+    if (ftr24h >= 0.05 && ftr1h > 0) {
+      const feeDecay = (24 * ftr1h) / ftr24h;
+      if (feeDecay < 0.6) {
+        if (Date.now() - lastAlertAt(pos.id, "real-fee-decline") > ALERT_COOLDOWN_MS) {
+          const msg = `⚠️ [${ts()}] DLMM RÉEL ${pos.name} : fees EN DÉCLIN (1h = ${(feeDecay * 100).toFixed(0)} % du rythme 24h, ftr24 ${ftr24h.toFixed(2)} %) — le yield s'essouffle, sortie anticipée ? ${killCmd}`;
+          logEvent("real-fee-decline", msg, pos.id, pos.pool_address);
+          if (creds) await sendTelegram(creds.token, creds.chatId, msg);
+          alerts++;
+        }
+      }
+    }
   }
   return alerts;
 }

@@ -56,6 +56,9 @@ export const config = {
   rebalanceThreshold: num("REBALANCE_THRESHOLD", 0.45),
   hardStopDailyDrop: num("HARD_STOP_DAILY_DROP", 0.4),
   minClaimUsd: num("MIN_CLAIM_USD", 25),
+  // Pilote réel : alerte « position en attente » après X h hors range (aucun
+  // fee) — décision laisser dormir / redéployer (kill-switch).
+  realOorAlertHours: num("REAL_OOR_ALERT_HOURS", 6),
   maxDailyDrop: num("MAX_DAILY_DROP", 0.4),
 
   // Couverture de dump typée (playbook Tiagogo/MeteoraFR) : le target dépend du
