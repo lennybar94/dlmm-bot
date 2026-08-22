@@ -26,6 +26,7 @@ interface SdkBundle {
   sendAndConfirmTransaction: (...args: unknown[]) => Promise<string>;
   createPool: (conn: unknown, address: unknown, opts: { cluster: string }) => Promise<Record<string, unknown>>;
   StrategyType: Record<string, number>;
+  BN: new (v: string | number) => { isZero: () => boolean };
   ComputeBudgetProgram: { setComputeUnitPrice: (args: { microLamports: number }) => unknown };
 }
 
@@ -39,6 +40,7 @@ function loadSdk(): SdkBundle {
     sendAndConfirmTransaction: solana.sendAndConfirmTransaction as SdkBundle["sendAndConfirmTransaction"],
     createPool: dlmm.create as SdkBundle["createPool"],
     StrategyType: dlmm.StrategyType as SdkBundle["StrategyType"],
+    BN: require("bn.js") as SdkBundle["BN"],
     ComputeBudgetProgram: solana.ComputeBudgetProgram as SdkBundle["ComputeBudgetProgram"],
   };
 }
@@ -175,8 +177,8 @@ export async function realOpenPosition(opp: OpportunityScore, depositUsd?: numbe
   const tx = await (pool as any).initializePositionAndAddLiquidityByStrategy({
     positionPubKey: positionPubKey.publicKey,
     user: (user as any).publicKey,
-    totalXAmount: rawX,
-    totalYAmount: rawY,
+    totalXAmount: new sdk.BN(rawX.toString()),
+    totalYAmount: new sdk.BN(rawY.toString()),
     strategy: { minBinId, maxBinId, strategyType },
   });
   try {
