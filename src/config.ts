@@ -115,6 +115,10 @@ export const config = {
   coolingLookbackMin: num("COOLING_LOOKBACK_MIN", 30),
   coolingMinPeakDeltaPerMin: num("COOLING_MIN_PEAK_DELTA_PER_MIN", 10_000),
   coolingMaxLossBidask: num("COOLING_MAX_LOSS_BIDASK", 0.15),
+  // Refroidissement SOUTENU (correction 2026-08-23) : nombre d'intervalles
+  // CONSÉCUTIFS sous le seuil requis pour sortir — à la cadence accel 60 s un
+  // seul intervalle sans trade est normal. 2 = ≥ 2 min à 60 s / ≥ 10 min à 5 min.
+  coolingConsecutive: num("COOLING_CONSECUTIVE", 2),
 
   // Radar « pool neuve qui chauffe » (RocketScan, 2026-08-23) : le post trie
   // par date de création et chasse le pool < 24 h qui chauffe immédiatement

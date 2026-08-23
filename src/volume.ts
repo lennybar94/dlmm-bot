@@ -27,6 +27,26 @@ export function volumeSeries(poolAddress: string, now: number, lookbackMs: numbe
   return rows.map((r) => ({ t: r.t, volume24h: r.v }));
 }
 
+/**
+ * Série UNIQUEMENT pool_scans (la source cohérente — le listing /pools du scan).
+ * ⚠️ Ne PAS mélanger avec accel_observations pour un SIGNAL : le listing API
+ * renvoie des volume_24h parfois PÉRIMÉS vs le détail /pools/{addr} → deltas
+ * fantômes (jusqu'à 289 k$/min sur omo) → faux pics → fausses sorties
+ * (2 positions réelles omo fermées à tort 2026-08-23 19:00). L'exit
+ * « cooling off » n'utilise QUE cette série ; accel reste pour l'historique.
+ */
+export function volumeSeriesScansOnly(poolAddress: string, now: number, lookbackMs: number): VolumePoint[] {
+  const since = now - lookbackMs;
+  const rows = db
+    .prepare(
+      `SELECT scanned_at AS t, volume_24h AS v FROM pool_scans
+       WHERE pool_address = ? AND scanned_at >= ? AND scanned_at < ? AND volume_24h > 0
+       ORDER BY t ASC`
+    )
+    .all(poolAddress, since, now) as { t: number; v: number }[];
+  return rows.map((r) => ({ t: r.t, volume24h: r.v }));
+}
+
 export interface CoolingState {
   /** Volume par minute de l'intervalle courant ($/min). */
   current: number;
@@ -50,7 +70,10 @@ export interface CoolingState {
 export function coolingOffState(poolAddress: string, now = Date.now()): CoolingState | null {
   if (!config.coolingExitEnabled) return null;
   const windowMs = config.coolingLookbackMin * 60_000;
-  const pts = volumeSeries(poolAddress, now, windowMs);
+  // ⚠️ UNIQUEMENT pool_scans (source cohérente) — pas d'accel_observations :
+  // le mélange des deux sources créait des deltas fantômes (faux positifs
+  // 2026-08-23, 2 positions réelles fermées à tort). Voir volumeSeriesScansOnly.
+  const pts = volumeSeriesScansOnly(poolAddress, now, windowMs);
   if (pts.length < 3) return null; // besoin d'au moins 2 deltas
 
   const perMin: number[] = [];
@@ -62,16 +85,30 @@ export function coolingOffState(poolAddress: string, now = Date.now()): CoolingS
     if (minutes <= 0 || !Number.isFinite(delta) || delta <= 0) continue;
     perMin.push(delta / minutes);
   }
-  if (perMin.length < 2) return null;
+  // ⚠️ Faux positifs 2026-08-23 (corrigé le soir même — 2 positions RÉELLES
+  // omo-SOL fermées à 19:00 + 2 paper) : à la cadence accel 60 s, un intervalle
+  // sans trade est NORMAL (pools à ~0,5-2 k$/min de moyenne, trades irréguliers)
+  // et un intervalle anormal (pic 37 k$/min, artefact API jusqu'à 1,8 M$/min)
+  // fixait la barre du pic → n'importe quel trou de 60 s déclenchait la sortie.
+  // Correctifs :
+  //  1. pic ROBUSTE = 2e plus haut delta par minute (un seul intervalle
+  //     anormal ne fixe plus la barre ; le gate momentum tombe dessus) ;
+  //  2. refroidissement SOUTENU = COOLING_CONSECUTIVE derniers intervalles tous
+  //     sous le seuil (≥ 2 min à 60 s, ≥ 10 min à 5 min) au lieu d'un seul.
+  if (perMin.length < 3) return null;
+  const sorted = [...perMin].sort((a, b) => b - a);
+  const peak = sorted[1] ?? sorted[0]; // 2e plus haut (robuste aux anomalies)
+  if (peak < config.coolingMinPeakDeltaPerMin) return null; // pas de momentum soutenu
 
-  const peak = Math.max(...perMin);
-  const current = perMin[perMin.length - 1];
-  if (peak < config.coolingMinPeakDeltaPerMin) return null; // pas de momentum
+  const threshold = config.coolingRatio * peak;
+  const k = Math.max(1, Math.min(perMin.length, config.coolingConsecutive));
+  const cooled = perMin.slice(-k).every((d) => d < threshold);
+  if (!cooled) return null;
 
   return {
-    current,
+    current: perMin[perMin.length - 1],
     peak,
-    ratio: current / peak,
+    ratio: perMin[perMin.length - 1] / peak,
     windowMin: (pts[pts.length - 1].t - pts[0].t) / 60_000,
   };
 }
