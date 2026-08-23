@@ -146,6 +146,23 @@ export async function fetchPools(opts: {
   return (res.data ?? []).map(normalizePool);
 }
 
+/**
+ * Pools les plus RÉCENTES (tri par date de création — RocketScan 2026-08-23 :
+ * « chasser le pool NEUF qui chauffe immédiatement », tri par date de création
+ * + >50k$/5min). Un pool < 24 h avec un vrai volume 30m n'apparaît pas dans le
+ * top 150 par volume 24h → appel dédié aux plus jeunes (1 requête/scan).
+ * Champ de tri vérifié en live : `pool_created_at` (pas `created_at`).
+ * Échec → radar silencieusement désactivé ce scan (jamais bloquant).
+ */
+export async function fetchNewestPools(topN = 100): Promise<Pool[]> {
+  try {
+    return await fetchPools({ pageSize: topN, sortBy: "pool_created_at:desc" });
+  } catch (err) {
+    console.warn(`[api] fetchNewestPools échoué (radar pool neuve désactivé ce scan) : ${String(err)}`);
+    return [];
+  }
+}
+
 /** État courant d'un pool. */
 export async function fetchPool(address: string): Promise<Pool> {
   const raw = await get<RawPool>(`/pools/${address}`);

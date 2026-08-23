@@ -13,6 +13,7 @@
     "real:shadow": "tsx scripts/real-shadow.ts",
     "real:monitor": "tsx scripts/real-monitor.ts",
     "monitor": "tsx scripts/monitor.ts",
+    "accel:monitor": "tsx scripts/accel-monitor.ts",
     "report:daily": "tsx scripts/report-daily.ts",
     "review:outcomes": "tsx scripts/review-outcomes.ts",
     "update:rules": "tsx scripts/update-rules.ts",

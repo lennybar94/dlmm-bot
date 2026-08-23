@@ -5,6 +5,7 @@
 // Usage : npm run real:monitor (cron */15 via dlmm-run.sh)
 import { db } from "../src/db.js";
 import { config } from "../src/config.js";
+import { coolingOffState } from "../src/volume.js";
 import { getTelegramCreds, sendTelegram } from "../src/telegram.js";
 import { getSolPriceUsd } from "../src/export.js";
 import { realClosePosition } from "../src/real.js";
@@ -342,6 +343,25 @@ export async function realMonitor(): Promise<number> {
           logEvent(
             "real-fee-decline",
             `⚠️ ${pos.name} : fees EN DÉCLIN (1h = ${(feeDecay * 100).toFixed(0)} % du rythme 24h, ftr24 ${ftr24h.toFixed(2)} %) — le yield s'essouffle, sortie anticipée ? ${killCmd}`,
+            pos.id,
+            pos.pool_address
+          );
+        }
+      }
+    }
+
+    // 7) Momentum refroidi (RocketScan, 2026-08-23) : miroir de l'exit paper
+    //    « cooling off » (déclin du delta de volume : intervalle courant <
+    //    COOLING_RATIO × pic des 30 dernières minutes) — topblast et
+    //    bidask-dip. RÉEL = INFORMATIF (tri alertes 22/08) : log only, jamais
+    //    auto sans validation David — décision humaine via le dashboard.
+    if ((pos.strategy === "topblast" || isDip) && config.coolingExitEnabled) {
+      const cool = coolingOffState(String(pos.pool_address));
+      if (cool && cool.ratio < config.coolingRatio) {
+        if (Date.now() - lastAlertAt(pos.id, "real-cooling-off") > ALERT_COOLDOWN_MS) {
+          logEvent(
+            "real-cooling-off",
+            `🌡️ ${pos.name} : momentum refroidi — intervalle courant ${(cool.current / 1000).toFixed(0)}k$/min = ${(cool.ratio * 100).toFixed(0)}% du pic ${(cool.peak / 1000).toFixed(0)}k$/min sur ${cool.windowMin.toFixed(0)}min — sortie anticipée ? ${killCmd}`,
             pos.id,
             pos.pool_address
           );

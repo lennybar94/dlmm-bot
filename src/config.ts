@@ -102,6 +102,37 @@ export const config = {
   quickMinFeeTvlRatio30m: num("QUICK_MIN_FEE_TVL_30M", 0.02), // % fees/TVL sur 30m (frais qui tournent)
   quickVolumeFadeFactor: num("QUICK_VOLUME_FADE_FACTOR", 0.5), // sortie si vol 30m < 50% du seuil
 
+  // Exit « cooling off » (RocketScan, 2026-08-23) : le post sort quand le
+  // momentum refroidit (colonne running → cooling off) — on n'avait que le
+  // feeDecay (fees du pool). Complément direct : déclin du DELTA de volume
+  // entre observations (pool_scans 5 min + accel_observations 60 s) — le
+  // volume de l'intervalle courant < COOLING_RATIO × pic des dernières
+  // COOLING_LOOKBACK_MIN minutes = le momentum meurt → exit topblast (sans
+  // garde : « fast in fast out ») et bidask-dip (garde anti-verrouillage de
+  // perte — leçon Bollinger 2026-08-18 : ne pas vendre au creux d'un pump).
+  coolingExitEnabled: bool("COOLING_EXIT_ENABLED", true),
+  coolingRatio: num("COOLING_RATIO", 0.4),
+  coolingLookbackMin: num("COOLING_LOOKBACK_MIN", 30),
+  coolingMinPeakDeltaPerMin: num("COOLING_MIN_PEAK_DELTA_PER_MIN", 10_000),
+  coolingMaxLossBidask: num("COOLING_MAX_LOSS_BIDASK", 0.15),
+
+  // Radar « pool neuve qui chauffe » (RocketScan, 2026-08-23) : le post trie
+  // par date de création et chasse le pool < 24 h qui chauffe immédiatement
+  // (>50k$/5min). Notre topblast exige un spike ≥ 30k$/min — la variante
+  // radar couvre la fenêtre D'AVANT le spike (vol 30m élevé sans porte
+  // topblast) — « voir tôt ≠ entrer tôt », jamais en auto.
+  radarNewPoolMaxAgeHours: num("RADAR_NEWPOOL_MAX_AGE_HOURS", 24),
+  radarNewPoolMinVol30m: num("RADAR_NEWPOOL_MIN_VOL_30M", 300_000),
+
+  // Monitor accéléré (RocketScan, 2026-08-23) : le post rafraîchit toutes les
+  // 5 s, nos scans à 5 min / marks à 15 min — le seul vrai gap structurel est
+  // le TIMING. Le monitor accéléré (60 s) surveille les pools CHAUDES (top N
+  // par score du dernier scan) : enregistre leur volume (accel_observations →
+  // deltas 60 s) et marque les positions paper ouvertes → l'exit
+  // « cooling off » se déclenche en ≤ 1 min au lieu de 5.
+  accelMonitorTopN: num("ACCEL_MONITOR_TOP_N", 5),
+  accelMonitorIntervalS: num("ACCEL_MONITOR_INTERVAL_S", 60),
+
   // Astuce « trending court » (DucatelRomain03, 2026-08-17) : sur GMGN, le
   // filtre Trending 5 min + Volume ≥ 50k (≈ 10k$/min) sert à VOIR tôt les
   // tokens qui démarrent, pas à entrer tôt. Proxy DLMM : delta de volume_24h

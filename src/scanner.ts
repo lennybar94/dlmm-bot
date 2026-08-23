@@ -3,7 +3,7 @@
 
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
-import { fetchOhlcv, fetchTopPools } from "./api.js";
+import { fetchOhlcv, fetchNewestPools, fetchTopPools } from "./api.js";
 import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, fibSwingFromCandles, fibRetraceLevel, DEFAULT_STRATEGY } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
@@ -68,6 +68,21 @@ export function recentVolumeDelta(
   const minutes = (scannedAt - prev.scanned_at) / 60_000;
   if (!Number.isFinite(delta) || delta <= 0 || minutes <= 0) return null;
   return { delta, minutes };
+}
+
+/**
+ * Radar « pool neuve qui chauffe » (RocketScan, 2026-08-23) : pool < 24 h avec
+ * un volume 30m élevé mais SANS la porte spike du topblast (vol 30m < 900k OU
+ * frais 30m < seuil — pas encore de première jambe confirmée). Le post trie par
+ * date de création et chasse ces pools — « voir tôt ≠ entrer tôt » : radar
+ * uniquement (score 0 → jamais ouvert en auto, pas de notif).
+ */
+function newPoolHeating(p: Pool): boolean {
+  return (
+    p.pool_age_days < config.radarNewPoolMaxAgeHours / 24 &&
+    p.volume_30m >= config.radarNewPoolMinVol30m &&
+    !isQuickInOutCandidate(p)
+  );
 }
 
 /**
@@ -184,8 +199,38 @@ export async function runScan(): Promise<ScanResult> {
           ? `+${(d.delta / 1000).toFixed(0)}k$ en ~${Math.round(d.minutes)}min`
           : `vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$`;
         earlyWatch.push({ pool: p, note });
+      } else if (newPoolHeating(p)) {
+        // Variante « pool neuve qui chauffe » (RocketScan, 2026-08-23) : le
+        // post trie par date de création et chasse le pool < 24 h qui chauffe
+        // immédiatement (>50k$/5min). Notre topblast exige un spike ≥ 30k$/min —
+        // cette variante radar couvre la fenêtre D'AVANT le spike (vol 30m
+        // élevé sans porte topblast) — voir tôt ≠ entrer tôt, jamais en auto.
+        earlyWatch.push({
+          pool: p,
+          note: `🌱 pool < 24 h qui chauffe (vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$, pas encore de spike ≥ 30k$/min) — fenêtre du post (RocketScan)`,
+        });
       }
     }
+  }
+
+  // Radar « pool neuve qui chauffe » (RocketScan) — complément du tri du scan
+  // principal : un pool < 24 h avec un vrai volume 30m n'apparaît pas dans le
+  // top 150 par volume 24h (son volume 24h est encore petit). On interroge les
+  // plus jeunes pools (sort_by=pool_created_at:desc, 1 requête) et on les
+  // ajoute au radar s'ils chauffent sans avoir la porte spike du topblast.
+  try {
+    const newest = await fetchNewestPools(100);
+    for (const p of newest) {
+      if (pools.some((q) => q.address === p.address)) continue; // déjà vu (rejeté ou retenu)
+      if (newPoolHeating(p)) {
+        earlyWatch.push({
+          pool: p,
+          note: `🌱 pool < 24 h qui chauffe (vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$, pas encore de spike ≥ 30k$/min) — fenêtre du post (RocketScan)`,
+        });
+      }
+    }
+  } catch (err) {
+    logEvent("scan", `Radar pool neuve indisponible ce scan : ${String(err)}`);
   }
 
   // Volatilité réalisée sur les pools retenus (30 RPS max → délai).

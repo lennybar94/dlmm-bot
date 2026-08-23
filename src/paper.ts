@@ -5,6 +5,7 @@ import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchPool } from "./api.js";
 import { STRATEGY_PRESETS, binIdFromPrice, depositForPool } from "./strategies.js";
+import { coolingOffState } from "./volume.js";
 import { getRules } from "./rules.js";
 import { reviewPositionOnClose } from "./review.js";
 import type { MarkResult, OpportunityScore, PaperPositionRow, StrategyName } from "./types.js";
@@ -243,6 +244,35 @@ function recentMarkPrices(positionId: number, n: number): number[] {
     .reverse();
 }
 
+/**
+ * Série de prix dans une FENÊTRE TEMPORELLE, décimée à targetN points —
+ * indépendante de la cadence des marks. Au monitor 15 min historique, une
+ * fenêtre de N×15 min contient ~N marks → comportement identique à
+ * recentMarkPrices(N). Avec le monitor accéléré (60 s sur les pools chaudes,
+ * RocketScan 2026-08-23), la même fenêtre contient ~15× plus de marks → on
+ * décime pour préserver la sémantique temporelle du Bollinger (20 points ≈ 5 h)
+ * et du flip (6 points ≈ 90 min) au lieu de compresser la fenêtre.
+ */
+function recentMarkPricesSince(positionId: number, windowMs: number, targetN: number): number[] {
+  const since = Date.now() - windowMs;
+  const rows = db
+    .prepare(
+      `SELECT price FROM pnl_snapshots WHERE position_id = ? AND taken_at >= ? ORDER BY taken_at DESC`
+    )
+    .all(positionId, since) as { price: number | null }[];
+  const prices = rows
+    .map((r) => r.price)
+    .filter((p): p is number => typeof p === "number" && p > 0)
+    .reverse();
+  if (prices.length <= targetN) return prices;
+  const step = prices.length / targetN;
+  const out: number[] = [];
+  for (let i = 0; i < prices.length && out.length < targetN; i = Math.round(i + step)) {
+    out.push(prices[i]);
+  }
+  return out;
+}
+
 /** Mark-to-market : valeur, frais simulés, IL, triggers (stop, rebalance). */
 export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   const pool = await fetchPool(pos.pool_address);
@@ -321,6 +351,30 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
     );
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
+  // Exit « cooling off » (RocketScan, 2026-08-23) : le post sort quand le
+  // momentum refroidit (colonne running → cooling off). Proxy = déclin du
+  // DELTA de volume entre observations (pool_scans 5 min + accel 60 s) : le
+  // volume de l'intervalle courant < COOLING_RATIO × pic des
+  // COOLING_LOOKBACK_MIN dernières minutes. Complément du quick-out-volume-fade
+  // (fenêtre fixe 30m de l'API) : le delta réagit dès l'intervalle qui
+  // refroidit. topblast : sans garde (« fast in fast out ») ; bidask-dip :
+  // garde anti-verrouillage de perte (leçon Bollinger 2026-08-18 : ne pas
+  // vendre au creux) — on ne sort que si la perte < COOLING_MAX_LOSS_BIDASK.
+  // bidask-flip : exclu — le Bollinger EST l'exit de la reprise.
+  if (isQuick || isDip) {
+    const cool = coolingOffState(pos.pool_address);
+    if (cool && cool.ratio < config.coolingRatio) {
+      const lossRatio = pos.deposit_usd > 0 ? (pos.deposit_usd - (valueUsd + fees)) / pos.deposit_usd : 0;
+      if (!isDip || lossRatio < config.coolingMaxLossBidask) {
+        closePosition(
+          pos.id,
+          "cooling-off",
+          `momentum refroidi : intervalle courant ${(cool.current / 1000).toFixed(0)}k$/min = ${(cool.ratio * 100).toFixed(0)}% du pic ${(cool.peak / 1000).toFixed(0)}k$/min sur ${cool.windowMin.toFixed(0)}min (RocketScan)`
+        );
+        return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+      }
+    }
+  }
   // Rebalance : drift trop important → ré-ouvrir centré (friction 0.3%).
   // Seuil dynamique : appris par le tuner (règles versionnées).
   // bidask-dip ET bidask-flip : JAMAIS de rebalance (range volontairement
@@ -362,7 +416,9 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // l'exit naturel de la reprise. Bougies ~15 min reconstruites depuis les
   // marks du bot (monitor 15 min) : on sort quand le prix casse mean + k·σ.
   if (isFlip && config.bollingerExitEnabled) {
-    const prices = recentMarkPrices(pos.id, config.bollingerPeriod);
+    // Fenêtre temporelle décimée (cadence-indépendante — le monitor accéléré
+    // 60 s marque les pools chaudes : 20 points ≈ 5 h, pas 20 min).
+    const prices = recentMarkPricesSince(pos.id, config.bollingerPeriod * 15 * 60_000, config.bollingerPeriod);
     if (prices.length >= config.bollingerMinSamples) {
       const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
       const variance =
@@ -395,7 +451,7 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
         "SELECT COUNT(*) n FROM events WHERE type IN ('flip-candidate', 'flip') AND position_id = ? AND created_at > ?"
       )
       .get(pos.id, since) as { n: number };
-    const prices = recentMarkPrices(pos.id, config.satsFlipLookback);
+    const prices = recentMarkPricesSince(pos.id, config.satsFlipLookback * 15 * 60_000, config.satsFlipLookback);
     if (already.n === 0 && prices.length >= config.satsFlipLookback) {
       // Fenêtre coupée en deux : la moitié récente ne refait pas de nouveau low
       // (min récents > min précédents = higher low) et le prix rebondit au-dessus.

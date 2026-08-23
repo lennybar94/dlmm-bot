@@ -46,6 +46,20 @@ CREATE TABLE IF NOT EXISTS pool_scans (
 );
 CREATE INDEX IF NOT EXISTS idx_pool_scans_addr ON pool_scans(pool_address, scanned_at);
 
+-- Monitor accéléré (RocketScan, 2026-08-23) : observations 60 s du volume des
+-- pools chaudes (top N par score) — deltas fins pour l'exit « cooling off »
+-- (les scans 5 min seuls donnent des deltas trop grossiers pour le timing du
+-- post, qui rafraîchit toutes les 5 s).
+CREATE TABLE IF NOT EXISTS accel_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  taken_at INTEGER NOT NULL,
+  pool_address TEXT NOT NULL,
+  volume_24h REAL,
+  volume_30m REAL,
+  volume_1h REAL
+);
+CREATE INDEX IF NOT EXISTS idx_accel_obs ON accel_observations(pool_address, taken_at);
+
 CREATE TABLE IF NOT EXISTS signals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at INTEGER NOT NULL,
