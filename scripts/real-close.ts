@@ -76,8 +76,11 @@ for (const t of targets) {
     }
     console.log(`  ✅ ${t.pubkey.slice(0, 12)}… fermée — sig ${sig.slice(0, 16)}…`);
     if (t.id) {
-      db.prepare(`UPDATE real_positions SET status='closed', closed_at=?, close_reason='manual-close' WHERE id=?`).run(
+      // La sig de CLOSE est persistée (traçabilité : le champ sig portait
+      // jusqu'ici la sig d'ouverture — leçon 2026-08-23, close BUTTHOLE).
+      db.prepare(`UPDATE real_positions SET status='closed', closed_at=?, close_reason='manual-close', sig=? WHERE id=?`).run(
         Date.now(),
+        sig,
         t.id
       );
     }
