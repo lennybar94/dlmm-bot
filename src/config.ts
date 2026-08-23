@@ -119,6 +119,12 @@ export const config = {
   // CONSÉCUTIFS sous le seuil requis pour sortir — à la cadence accel 60 s un
   // seul intervalle sans trade est normal. 2 = ≥ 2 min à 60 s / ≥ 10 min à 5 min.
   coolingConsecutive: num("COOLING_CONSECUTIVE", 2),
+  // Deadband anti-bruit du recovery-exit (correction 2026-08-23 20:06) : une
+  // position FLAT (marks oscillant autour de 0 $ par poussière de rounding)
+  // déclenchait « recovery-exit PnL 0.0$ au rebond » — le « sous l'eau au mark
+  // précédent » comptait -0,0001 $ comme sous l'eau. EPS = perte minimale
+  // RÉELLE du mark précédent pour être considéré sous l'eau (paper et réel).
+  recoveryEpsUsd: num("RECOVERY_EPS_USD", 1),
 
   // Radar « pool neuve qui chauffe » (RocketScan, 2026-08-23) : le post trie
   // par date de création et chasse le pool < 24 h qui chauffe immédiatement

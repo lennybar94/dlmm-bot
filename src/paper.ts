@@ -403,7 +403,7 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // encore sous l'eau). S'applique aux échelles anti-dump qui ont attrapé le
   // rebond. Condition "sous l'eau au mark précédent" (fees incluses) pour ne
   // pas sortir à l'ouverture.
-  const prevNetUnderwater = (pos.last_value_usd ?? 0) + (pos.fees_earned_usd ?? 0) + (pos.fees_claimed_usd ?? 0) < pos.deposit_usd;
+  const prevNetUnderwater = (pos.last_value_usd ?? 0) + (pos.fees_earned_usd ?? 0) + (pos.fees_claimed_usd ?? 0) < pos.deposit_usd - config.recoveryEpsUsd;
   if (isDipLike && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd) {
     closePosition(pos.id, "recovery-exit", `PnL net ≥ 0 au rebond : value ${valueUsd.toFixed(2)}$ + fees ${fees.toFixed(2)}$ ≥ ${pos.deposit_usd}$ (fees incluses)`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };

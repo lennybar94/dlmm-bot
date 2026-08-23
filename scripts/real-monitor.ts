@@ -186,7 +186,10 @@ export async function realMonitor(): Promise<number> {
     const lastMark = db
       .prepare(`SELECT net_pnl_usd FROM real_marks WHERE position_id = ? ORDER BY id DESC LIMIT 1`)
       .get(pos.id) as { net_pnl_usd: number } | undefined;
-    const prevUnderwater = lastMark ? lastMark.net_pnl_usd < 0 : false;
+    // « Sous l'eau » = perte RÉELLE au mark précédent (deadband RECOVERY_EPS_USD
+    // — correction 2026-08-23 : une position flat oscillant autour de 0 $ par
+    // poussière de rounding déclenchait recovery-exit à PnL 0.0$).
+    const prevUnderwater = lastMark ? lastMark.net_pnl_usd < -config.recoveryEpsUsd : false;
 
     db.prepare(`UPDATE real_positions SET last_value_usd = ?, last_mark_at = ? WHERE id = ?`).run(
       valueUsd,
