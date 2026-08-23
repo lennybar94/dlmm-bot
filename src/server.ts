@@ -71,7 +71,7 @@ async function servePool(reqUrl: URL, res: http.ServerResponse): Promise<void> {
     .all(addr);
   const realMarks = db
     .prepare(
-      `SELECT taken_at, value_usd, fees_usd, net_pnl_usd, in_range
+      `SELECT position_id, taken_at, value_usd, fees_usd, net_pnl_usd, in_range
        FROM real_marks WHERE position_id IN (SELECT id FROM real_positions WHERE pool_address=?)
        ORDER BY id ASC LIMIT 200`
     )

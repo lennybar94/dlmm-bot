@@ -233,30 +233,37 @@ function render(d) {
     kvRow("Volume cumulé", usd(cm?.volume)) + kvRow("Fees cumulées", usd(cm?.fees)) +
     kvRow("Prix courant", sig(p.current_price) + " " + esc(ty?.symbol) + "/" + esc(tx?.symbol));
 
-  // ---- Pilote réel ----
-  const realOpen = (d.real || []).find((r) => r.status === "open");
+  // ---- Pilote réel (TOUTES les positions ouvertes — le .find() ne rendait
+  // que la première, bug 2026-08-23 avec 2 positions omo) ----
+  const realOpen = (d.real || []).filter((r) => r.status === "open");
   const mk = d.realMarks || [];
-  if (realOpen) {
-    const lastMark = mk.length ? mk[mk.length - 1] : null;
-    const stBadge = lastMark
-      ? (lastMark.in_range
-          ? `<span class="badge ok">in-range</span>`
-          : `<span class="badge warn">hors range</span>`)
-      : `<span class="badge ink">pas de mark</span>`;
-    const stPnl = lastMark
-      ? `<b class="${lastMark.net_pnl_usd >= 0 ? "pos" : "neg"}">${lastMark.net_pnl_usd >= 0 ? "+" : ""}${lastMark.net_pnl_usd.toFixed(1)}$</b>`
-      : "—";
-    const stLine = lastMark
-      ? ` · PnL ${stPnl} · fees ${lastMark.fees_usd.toFixed(2)}$ · mark ${new Date(lastMark.taken_at).toLocaleTimeString("fr-FR")}`
-      : "";
+  if (realOpen.length) {
+    const lines = realOpen.map((rp) => {
+      const lm = [...mk].reverse().find((m) => m.position_id === rp.id) || null;
+      const stBadge = lm
+        ? (lm.in_range
+            ? `<span class="badge ok">in-range</span>`
+            : `<span class="badge warn">hors range</span>`)
+        : `<span class="badge ink">pas de mark</span>`;
+      const stPnl = lm
+        ? `<b class="${lm.net_pnl_usd >= 0 ? "pos" : "neg"}">${lm.net_pnl_usd >= 0 ? "+" : ""}${lm.net_pnl_usd.toFixed(1)}$</b>`
+        : "—";
+      const stLine = lm
+        ? ` · PnL ${stPnl} · fees ${lm.fees_usd.toFixed(2)}$ · mark ${new Date(lm.taken_at).toLocaleTimeString("fr-FR")}`
+        : "";
+      return (
+        `<b>Position RÉELLE ouverte</b> le ${esc(rp.opened)} · ${esc(rp.strategy)} · ` +
+        `<b>${usd(rp.deposit_usd)}</b> (${f2(rp.amount_y)} SOL) · range ${rp.min_bin_id}→${rp.max_bin_id} ` +
+        `· pubkey <span class="addr">${esc(rp.position_pubkey)}</span> · <span class="badge ok">${esc(rp.status)}</span><br>` +
+        `État : ${stBadge}${stLine}`
+      );
+    });
     $("pilotNote").innerHTML =
-      `<b>Position RÉELLE ouverte</b> le ${esc(realOpen.opened)} · ${esc(realOpen.strategy)} · ` +
-      `<b>${usd(realOpen.deposit_usd)}</b> (${f2(realOpen.amount_y)} SOL) · range ${realOpen.min_bin_id}→${realOpen.max_bin_id} ` +
-      `· pubkey <span class="addr">${esc(realOpen.position_pubkey)}</span> · <span class="badge ok">${esc(realOpen.status)}</span><br>` +
-      `État : ${stBadge}${stLine}` +
+      lines.join("<hr style=\"margin:8px 0;border-color:var(--line)\">") +
       (mk.length >= 2 ? `<div style="margin-top:10px"><canvas id="pnlChart" style="width:100%;height:90px"></canvas></div>` : "");
-    $("pilotKill").textContent =
-      `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey ${realOpen.position_pubkey} --pool ${POOL} --bps 10000`;
+    $("pilotKill").textContent = realOpen
+      .map((rp) => `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey ${rp.position_pubkey} --pool ${POOL} --bps 10000`)
+      .join("\n");
     if (mk.length >= 2) drawPnl(mk);
   } else {
     $("pilotNote").innerHTML =
