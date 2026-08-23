@@ -111,6 +111,17 @@ db.prepare(
   r.positionPubkey, r.sig, r.minBinId, r.maxBinId, p.bin_step, r.entryPrice,
   p.token_x.symbol ?? null, p.token_y.symbol ?? null, r.amountX, r.amountY
 );
+// Première mark immédiate : le watchdog (MAX(taken_at) global > 40 min) criait
+// au loup entre l'ouverture et le 1er tick real-monitor (*/15) — leçon 23/08.
+db.prepare(
+  `INSERT INTO real_marks (taken_at, position_id, price, value_usd, fees_usd, net_pnl_usd, in_range)
+   VALUES (?, ?, ?, ?, 0, 0, 1)`
+).run(
+  Date.now(),
+  Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id),
+  r.entryPrice,
+  dep
+);
 console.log(`✅ OUVERT RÉEL : ${p.name} — ${opp.strategyHint.strategy} — ${dep.toFixed(0)}$`);
 console.log(`  position pubkey : ${r.positionPubkey}`);
 console.log(`  sig             : ${r.sig}`);
