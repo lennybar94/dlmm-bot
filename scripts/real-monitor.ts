@@ -353,18 +353,30 @@ export async function realMonitor(): Promise<number> {
     // 7) Momentum refroidi (RocketScan, 2026-08-23) : miroir de l'exit paper
     //    « cooling off » (déclin du delta de volume : intervalle courant <
     //    COOLING_RATIO × pic des 30 dernières minutes) — topblast et
-    //    bidask-dip. RÉEL = INFORMATIF (tri alertes 22/08) : log only, jamais
-    //    auto sans validation David — décision humaine via le dashboard.
+    //    bidask-dip. AUTO validé David 2026-08-23 (REAL_EXIT_AUTO) : même
+    //    kill-switch que recovery/hard-stop. Garde miroir du paper :
+    //    bidask-dip → pas de verrouillage de perte > COOLING_MAX_LOSS_BIDASK
+    //    (leçon Bollinger 2026-08-18) ; topblast sans garde.
     if ((pos.strategy === "topblast" || isDip) && config.coolingExitEnabled) {
       const cool = coolingOffState(String(pos.pool_address));
       if (cool && cool.ratio < config.coolingRatio) {
-        if (Date.now() - lastAlertAt(pos.id, "real-cooling-off") > ALERT_COOLDOWN_MS) {
-          logEvent(
-            "real-cooling-off",
-            `🌡️ ${pos.name} : momentum refroidi — intervalle courant ${(cool.current / 1000).toFixed(0)}k$/min = ${(cool.ratio * 100).toFixed(0)}% du pic ${(cool.peak / 1000).toFixed(0)}k$/min sur ${cool.windowMin.toFixed(0)}min — sortie anticipée ? ${killCmd}`,
-            pos.id,
-            pos.pool_address
-          );
+        const lossRatio = refSol > 0 ? -netPnlSol / refSol : 0;
+        if (!isDip || lossRatio < config.coolingMaxLossBidask) {
+          const detail = `momentum refroidi : intervalle courant ${(cool.current / 1000).toFixed(0)}k$/min = ${(cool.ratio * 100).toFixed(0)}% du pic ${(cool.peak / 1000).toFixed(0)}k$/min sur ${cool.windowMin.toFixed(0)}min (RocketScan)`;
+          if (config.realExitAuto) {
+            const m = await autoClose(pos, "cooling-off", detail, netPnlUsd, valueUsd, creds);
+            if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
+            alerts++;
+            continue; // fermée (ou échec traité) — rien d'autre ce tick
+          }
+          if (Date.now() - lastAlertAt(pos.id, "real-cooling-off") > ALERT_COOLDOWN_MS) {
+            logEvent(
+              "real-cooling-off",
+              `🌡️ ${pos.name} : ${detail} — sortie anticipée ? ${killCmd}`,
+              pos.id,
+              pos.pool_address
+            );
+          }
         }
       }
     }
