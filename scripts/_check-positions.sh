@@ -20,6 +20,6 @@ cd /home/polybot/dlmm-bot
 python3 -c "
 import sqlite3
 c=sqlite3.connect('data/dlmm-bot.db')
-for r in c.execute(\"SELECT id,name,status,deposit_usd,amount_y,min_bin_id,max_bin_id,str(sig)[:14] FROM real_positions WHERE status='open' ORDER BY id\"):
+for r in c.execute(\"SELECT id,name,status,deposit_usd,amount_y,min_bin_id,max_bin_id,substr(sig,1,14) FROM real_positions WHERE status='open' ORDER BY id\"):
     print('  #%s %s %s %s\$ %s SOL bins %s→%s sig=%s' % r)
 "
