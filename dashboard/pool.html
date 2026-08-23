@@ -101,8 +101,8 @@
 
 <section>
   <h2>Pool</h2>
-  <details open><summary>Jeton XST</summary><div class="body" id="tokX"></div></details>
-  <details><summary>Jeton SOL (quote)</summary><div class="body" id="tokY"></div></details>
+  <details open><summary id="tokXTitle">Jeton…</summary><div class="body" id="tokX"></div></details>
+  <details><summary id="tokYTitle">Jeton… (quote)</summary><div class="body" id="tokY"></div></details>
   <details><summary>Config du pool</summary><div class="body" id="cfg"></div></details>
   <details><summary>Réserves &amp; cumul</summary><div class="body" id="reserves"></div></details>
 </section>
@@ -152,8 +152,12 @@ function kvRow(k, v, cls) { return `<div class="kv"><span class="k">${k}</span><
 
 function render(d) {
   const p = d.pool, s = d.scan, h = s?.hint || {};
-  $("title").innerHTML = esc((p.name || "POOL").split("-")[0]) + "<span>/" + esc(p.token_y?.symbol || "SOL") + "</span>";
-  document.title = (p.name || "POOL").split("-")[0] + "/" + (p.token_y?.symbol || "SOL") + " — Pool";
+  const baseName = (p.name || "").split("-")[0] || p.token_x?.symbol || "POOL";
+  const tokX = p.token_x?.symbol || "X", tokY = p.token_y?.symbol || "Y";
+  $("title").innerHTML = esc(baseName) + "<span>/" + esc(tokY) + "</span>";
+  document.title = baseName + "/" + tokY + " — Pool";
+  $("tokXTitle").textContent = "Jeton " + tokX;
+  $("tokYTitle").textContent = "Jeton " + tokY + " (quote)";
   $("addr").textContent = POOL;
   $("live").textContent = "màj " + new Date(d.fetched_at).toLocaleTimeString("fr-FR");
 
@@ -162,7 +166,7 @@ function render(d) {
   const aprRun = ftr24 != null ? (ftr24 / 100) * 365 * (1 - (p.pool_config?.protocol_fee_pct ?? 10) / 100) : null;
   const age = s?.age_days ?? ((Date.now() - p.created_at) / 86400000);
   const kpis = [
-    ["Prix", sig(p.current_price) + " SOL", p.token_x?.price ? usd(p.token_x.price) + " / XST" : ""],
+    ["Prix", sig(p.current_price) + " SOL", p.token_x?.price ? usd(p.token_x.price) + " / " + tokX : ""],
     ["TVL", usd(p.tvl), p.token_x?.symbol + "/" + p.token_y?.symbol],
     ["Volume 24h", usd(p.volume?.["24h"]), "30m : " + usd(p.volume?.["30m"])],
     ["Fees 24h", usd(p.fees?.["24h"]), "30m : " + usd(p.fees?.["30m"])],

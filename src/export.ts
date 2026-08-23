@@ -45,6 +45,15 @@ export async function getSolPriceUsd(): Promise<number | null> {
   return null;
 }
 
+/** Nom d'affichage : l'API renvoie parfois des noms vides ou "-SOL" (pool
+ * sans nom) — fallback sur les symboles token_x-token_y (leçon 2026-08-23 :
+ * opportunité « -SOL » = CYBERLEEK). */
+function displayName(name: unknown, x: unknown, y: unknown): string {
+  const n = String(name ?? "").trim();
+  if (n && !n.startsWith("-")) return n;
+  return `${String(x ?? "X")}-${String(y ?? "Y")}`;
+}
+
 export async function exportData(): Promise<string> {
   const dir = path.join(config.dataDir, "export");
   fs.mkdirSync(dir, { recursive: true });
@@ -61,7 +70,7 @@ export async function exportData(): Promise<string> {
     .slice(0, 50)
     .map((r) => ({
       pool_address: r.pool_address,
-      name: r.name,
+      name: displayName(r.name, r.token_x_symbol, r.token_y_symbol),
       tvl: r.tvl,
       volume_24h: r.volume_24h,
       volume_1h: r.volume_1h,
@@ -168,7 +177,7 @@ export async function exportData(): Promise<string> {
     .slice(0, 20)
     .map((r) => ({
       pool_address: r.pool_address,
-      name: r.name,
+      name: displayName(r.name, r.token_x_symbol, r.token_y_symbol),
       tvl: r.tvl,
       volume_30m: r.volume_30m,
       volume_24h: r.volume_24h,
@@ -180,9 +189,53 @@ export async function exportData(): Promise<string> {
       signals: safeJson(r.signals as string),
     }));
 
+  // Pilote RÉEL (positions ouvertes + dernier mark chacune) — le dashboard
+  // principal ne montrait que le paper ; le réel vivait sur pool.html +
+  // Telegram + rapport. Ajouté 2026-08-23 (demande David).
+  const realRows = (db
+    .prepare(
+      `SELECT rp.id, rp.name, rp.strategy, rp.pool_address, rp.deposit_usd, rp.amount_y,
+              rp.min_bin_id, rp.max_bin_id, rp.position_pubkey, rp.opened_at,
+              rm.value_usd, rm.net_pnl_usd, rm.in_range, rm.taken_at
+       FROM real_positions rp
+       LEFT JOIN real_marks rm ON rm.id = (
+         SELECT id FROM real_marks WHERE position_id = rp.id ORDER BY id DESC LIMIT 1)
+       WHERE rp.status = 'open'
+       ORDER BY rp.id`
+    )
+    .all() as Record<string, unknown>[]);
+  const real = realRows.length
+    ? {
+        positions: realRows.map((p) => ({
+          id: p.id,
+          name: p.name,
+          strategy: p.strategy,
+          pool_address: p.pool_address,
+          deposit_usd: p.deposit_usd,
+          amount_y_sol: p.amount_y,
+          min_bin_id: p.min_bin_id,
+          max_bin_id: p.max_bin_id,
+          position_pubkey: p.position_pubkey,
+          opened_at: p.opened_at,
+          value_usd: p.value_usd ?? null,
+          net_pnl_usd: p.net_pnl_usd ?? null,
+          in_range: p.in_range ?? null,
+          mark_taken_at: p.taken_at ?? null,
+        })),
+        summary: {
+          open: realRows.length,
+          investedUsd: realRows.reduce((a, p) => a + Number(p.deposit_usd ?? 0), 0),
+          valueUsd: realRows.reduce((a, p) => a + Number(p.value_usd ?? 0), 0),
+          netPnlUsd: realRows.reduce((a, p) => a + Number(p.net_pnl_usd ?? 0), 0),
+          deployedSol: realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0),
+        },
+      }
+    : null;
+
   const payload = {
     generated_at: now,
     summary: getPortfolioSummary(),
+    real,
     sol_price_usd: solPriceUsd,
     last_activity: {
       last_scan_at: lastScanAt.m ?? null,

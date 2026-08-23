@@ -97,6 +97,18 @@
 
 <div class="kpis" id="kpis"></div>
 
+<section id="realSection" style="display:none">
+  <h2>🟠 Pilote réel <span class="count" id="realCount">0</span></h2>
+  <div class="body" id="realSummary" style="padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap"></div>
+  <table id="realTable">
+    <thead><tr>
+      <th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>SOL déployés</th><th>Valeur</th><th>PnL net</th>
+      <th>Range (bins)</th><th>Pubkey</th><th>Ouverte</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
 <section>
   <h2>Portefeuille <span class="count" id="posCount">0</span></h2>
   <div class="chart"><canvas id="valueChart"></canvas></div>
@@ -223,6 +235,33 @@ function render(d) {
   $("#kpis").innerHTML = kpis.map(([l, v, sub, cls]) =>
     `<div class="kpi"><div class="label">${l}</div><div class="value ${cls || ""}">${v}</div><div class="sub">${sub}</div></div>`
   ).join("");
+
+  // Pilote réel (section en haut — le seul endroit qui compte pour le suivi)
+  const real = d.real;
+  if (real && real.positions && real.positions.length) {
+    const rs = real.summary;
+    $("#realSection").style.display = "";
+    $("#realCount").textContent = rs.open;
+    $("#realSummary").innerHTML = [
+      `<span><b>Déployé</b> ${fmt(rs.deployedSol, 2)} SOL (${usd(rs.investedUsd)})</span>`,
+      `<span><b>Valeur</b> ${usd(rs.valueUsd)}</span>`,
+      `<span><b>PnL net</b> <span class="${sign(rs.netPnlUsd)}">${usd(rs.netPnlUsd)}</span></span>`,
+    ].join("");
+    $("#realTable tbody").innerHTML = real.positions.map((p) => `
+      <tr>
+        <td><strong>${p.name}</strong></td>
+        <td><span class="strat">${p.strategy}</span></td>
+        <td>${usd(p.deposit_usd)}</td>
+        <td>${fmt(p.amount_y_sol, 2)}</td>
+        <td>${usd(p.value_usd)}${p.in_range === 0 ? ' <span class="neg">OOR</span>' : ""}</td>
+        <td class="${sign(p.net_pnl_usd)}">${usd(p.net_pnl_usd)}</td>
+        <td>${p.min_bin_id} → ${p.max_bin_id}</td>
+        <td class="mono">${String(p.position_pubkey || "").slice(0, 10)}…</td>
+        <td>${dstr(p.opened_at)}</td>
+      </tr>`).join("");
+  } else {
+    $("#realSection").style.display = "none";
+  }
 
   // Graphique : valeur agrégée du portefeuille
   const byTime = new Map();
