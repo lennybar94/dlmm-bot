@@ -57,15 +57,15 @@ async function servePool(reqUrl: URL, res: http.ServerResponse): Promise<void> {
     .get(addr) as { score: number; signals: string; strategy_hint: string; pool_age_days: number; launchpad: string | null; current_price: number } | undefined;
   const paper = db
     .prepare(
-      `SELECT datetime(opened_at/1000,'unixepoch') AS opened, strategy, deposit_usd, fees_earned_usd, status
+      `SELECT datetime(opened_at/1000,'unixepoch','localtime') AS opened, strategy, deposit_usd, fees_earned_usd, status
        FROM paper_positions WHERE pool_address=? ORDER BY opened_at DESC LIMIT 10`
     )
     .all(addr);
   const real = db
     .prepare(
       `SELECT id, name, strategy, status, deposit_usd, amount_y, min_bin_id, max_bin_id,
-              position_pubkey, sig, datetime(opened_at/1000,'unixepoch') AS opened,
-              datetime(closed_at/1000,'unixepoch') AS closed
+              position_pubkey, sig, datetime(opened_at/1000,'unixepoch','localtime') AS opened,
+              datetime(closed_at/1000,'unixepoch','localtime') AS closed
        FROM real_positions WHERE pool_address=? ORDER BY id DESC LIMIT 3`
     )
     .all(addr);
