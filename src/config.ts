@@ -59,9 +59,17 @@ export const config = {
   // Pilote réel : alerte « position en attente » après X h hors range (aucun
   // fee) — décision laisser dormir / redéployer (kill-switch).
   realOorAlertHours: num("REAL_OOR_ALERT_HOURS", 6),
+  // Décision OOR AUTO (mandat autonomie 2026-08-24) : hors range > X h sous
+  // l'eau → force-close pour libérer le capital (le sweep + le cron open:paper
+  // réallouent ≤ 1 h). net ≥ 0 → close dès REAL_OOR_ALERT_HOURS (oor-redeploy).
+  realOorForceCloseHours: num("REAL_OOR_FORCE_CLOSE_HOURS", 24),
+  // Claim AUTO des fees (mandat autonomie 2026-08-24) : fees ≥ MIN_CLAIM_USD
+  // → realClaimRewards + ✅/🚨 Telegram (mandataire — même classe que le sweep).
+  claimAutoEnabled: bool("CLAIM_AUTO_ENABLED", true),
   // Pilote réel : exécution AUTOMATIQUE des exits définis (recovery-exit,
-  // hard-stop) — validé David 2026-08-22. Flip/OOR/fee-decline restent des
-  // décisions humaines. Le wrapper dlmm-realmonitor.sh pose REAL_MODE en
+  // hard-stop, cooling-off, oor-redeploy/oor-force depuis 2026-08-24) —
+  // validé David 22/08, autonomie complète 24/08. Flip/fee-decline restent
+  // des décisions humaines. Le wrapper dlmm-realmonitor.sh pose REAL_MODE en
   // process-local (JAMAIS dans .env — le cron open:paper doit rester paper).
   realExitAuto: bool("REAL_EXIT_AUTO", true),
   maxDailyDrop: num("MAX_DAILY_DROP", 0.4),

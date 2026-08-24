@@ -8,7 +8,7 @@ import { config } from "../src/config.js";
 import { coolingOffState, inFeeSurge } from "../src/volume.js";
 import { getTelegramCreds, sendTelegram } from "../src/telegram.js";
 import { getSolPriceUsd } from "../src/export.js";
-import { realClosePosition } from "../src/real.js";
+import { realClosePosition, realClaimRewards } from "../src/real.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -154,11 +154,12 @@ export async function realMonitor(): Promise<number> {
     // Position on-chain (montants + fees claimables) — avec retry (1) et
     // double vérification : une erreur RÉSEAU n'est PAS une position disparue.
     let pd: Record<string, any> | null = null;
+    let dlmm: any = null; // hoisté — l'activeBin sert au calcul d'in_range (bonne échelle)
     let readError = "";
     let notFound = false;
     for (let attempt = 1; attempt <= 2 && !readError; attempt++) {
       try {
-        const dlmm = await createPool(connection, new PublicKey(pos.pool_address), { cluster: config.cluster });
+        dlmm = await createPool(connection, new PublicKey(pos.pool_address), { cluster: config.cluster });
         const res = await dlmm.getPositionsByUserAndLbPair(user.publicKey);
         const found = res.userPositions.find(
           (p: any) => p.publicKey.toBase58() === pos.position_pubkey
@@ -213,8 +214,23 @@ export async function realMonitor(): Promise<number> {
     const valueUsd = valueSol * solUsd;
     const feesUsd = feesSol * solUsd;
     const netPnlUsd = netPnlSol * solUsd;
-    const inRange =
-      price >= binPrice(pos.min_bin_id, pos.bin_step) && price <= binPrice(pos.max_bin_id, pos.bin_step);
+    // in_range : comparaison SUR LA MÊME ÉCHELLE (piège 2026-08-24, cc-SOL).
+    // Le prix Data API (pool.current_price) est par-TOKEN ; binPrice() est sur
+    // l'échelle par-LAMPORT (échelle des min/max_bin_id on-chain) → le mélange
+    // marquait OOR des positions EN RANGE (cc-SOL marquée OOR depuis 11:25
+    // alors qu'elle encaissait des fees — Meteora les affichait bien). Source
+    // fiable : l'activeBin ON-CHAIN du SDK (même échelle que min/max_bin_id).
+    // Fallback : conversion par les decimals (per-lamport = per-token ×
+    // 10^(decY−decX)) si getActiveBin échoue.
+    let inRange = false;
+    try {
+      const activeBin = (await dlmm.getActiveBin()).binId as number;
+      inRange = activeBin >= pos.min_bin_id && activeBin <= pos.max_bin_id;
+    } catch {
+      const priceLamport = price * 10 ** (decY - decX);
+      inRange =
+        priceLamport >= binPrice(pos.min_bin_id, pos.bin_step) && priceLamport <= binPrice(pos.max_bin_id, pos.bin_step);
+    }
 
     const lastMark = db
       .prepare(`SELECT net_pnl_usd FROM real_marks WHERE position_id = ? ORDER BY id DESC LIMIT 1`)
@@ -333,22 +349,37 @@ export async function realMonitor(): Promise<number> {
       }
     }
 
-    // 4) Claim : fees claimables on-chain au-dessus du seuil → INFORMATIF
-    //    (tri alertes 22/08) : log only — le claim est inclus dans le close.
-    if (feesUsd >= config.minClaimUsd) {
-      if (Date.now() - lastAlertAt(pos.id, "real-claim-alert") > CLAIM_COOLDOWN_MS) {
-        logEvent(
-          "real-claim-alert",
-          `💰 ${pos.name} : ${feesUsd.toFixed(2)}$ de fees claimables on-chain (seuil ${config.minClaimUsd}$) — claim manuel (real:claim à brancher) ou inclus dans le close`,
-          pos.id,
-          pos.pool_address
-        );
+    // 4) Claim AUTO des fees on-chain (mandat autonomie 2026-08-24) : au-dessus
+    //    du seuil MIN_CLAIM_USD, on réclame (realClaimRewards — claim seul, ne
+    //    ferme pas la position). Les fees sont le rendement des positions
+    //    ouvertes ; les laisser on-chain ne rapporte rien. ✅/🚨 Telegram
+    //    (mandataire : le système bouge de l'argent — même classe que le sweep).
+    //    Cooldown 24 h (CLAIM_COOLDOWN_MS).
+    if (feesUsd >= config.minClaimUsd && config.claimAutoEnabled) {
+      if (Date.now() - lastAlertAt(pos.id, "real-claim") > CLAIM_COOLDOWN_MS) {
+        try {
+          const sig = await realClaimRewards(String(pos.pool_address), String(pos.position_pubkey));
+          if (!sig) throw new Error("sig vide — rien claimé");
+          const m = `💰 [${ts()}] DLMM RÉEL ${pos.name} : claim AUTO ${feesUsd.toFixed(2)}$ de fees → wallet (sig ${sig.slice(0, 12)}…)`;
+          logEvent("real-claim", m, pos.id, pos.pool_address);
+          if (creds) await sendTelegram(creds.token, creds.chatId, m);
+          alerts++;
+        } catch (e) {
+          const m = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : claim AUTO ÉCHOUÉ (${String(e).slice(0, 120)}) — fees ${feesUsd.toFixed(2)}$ toujours on-chain, retentera`;
+          logEvent("real-claim-fail", m, pos.id, pos.pool_address);
+          if (creds) await sendTelegram(creds.token, creds.chatId, m);
+          alerts++;
+        }
       }
     }
 
-    // 5) Position en attente : hors range depuis trop longtemps = aucun fee —
-    //    décision « laisser dormir ou fermer pour redéployer » (le pilote ne
-    //    doit pas moisir sans travailler). Cooldown 12 h.
+    // 5) Position hors range : 0 fee = capital mort — décision AUTO (mandat
+    //    autonomie 2026-08-24). net ≥ 0 → close + réallocation dès le seuil
+    //    d'alerte (REAL_OOR_ALERT_HOURS, le capital doit retravailler —
+    //    leçon BUTTHOLE 25 h OOR) ; sous l'eau → on attend
+    //    REAL_OOR_FORCE_CLOSE_HOURS avant de libérer (pas de verrouillage de
+    //    perte précipité, mais pas de position qui moisit — le sweep + le cron
+    //    open:paper réallouent ≤ 1 h). Sans REAL_EXIT_AUTO : alerte info.
     if (!inRange) {
       const oorSince = (
         db
@@ -359,12 +390,27 @@ export async function realMonitor(): Promise<number> {
       )?.taken_at ?? pos.opened_at;
       const oorHours = (Date.now() - oorSince) / 3_600_000;
       if (oorHours > config.realOorAlertHours) {
+        const netOk = netPnlSol >= 0;
+        const force = oorHours > config.realOorForceCloseHours;
+        if (config.realExitAuto && (netOk || force)) {
+          const m = await autoClose(
+            pos,
+            netOk ? "oor-redeploy" : "oor-force",
+            `hors range ${oorHours.toFixed(1)} h (0 fee) — PnL net ${netPnlUsd.toFixed(1)}$ → ${netOk ? "redéploiement" : "libération du capital (24 h atteint)"}`,
+            netPnlUsd,
+            valueUsd,
+            creds
+          );
+          if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
+          alerts++;
+          continue; // fermée (ou échec traité) — rien d'autre ce tick
+        }
         if (Date.now() - lastAlertAt(pos.id, "real-oor") > ALERT_COOLDOWN_MS) {
           // INFORMATIF (tri alertes 22/08) : log only — le dashboard suit,
           // pas de Telegram pour la position en attente.
           logEvent(
             "real-oor",
-            `⏳ ${pos.name} : HORS RANGE depuis ${oorHours.toFixed(1)} h (0 fee, PnL ${netPnlUsd.toFixed(1)}$) — laisser dormir ou redéployer ? ${killCmd}`,
+            `⏳ ${pos.name} : HORS RANGE depuis ${oorHours.toFixed(1)} h (0 fee, PnL ${netPnlUsd.toFixed(1)}$) — ${config.realExitAuto ? (netOk ? "close auto au prochain tick (redéploiement)" : `sous l'eau — force-close auto à ${config.realOorForceCloseHours} h`) : `laisser dormir ou redéployer ? ${killCmd}`}`,
             pos.id,
             pos.pool_address
           );
