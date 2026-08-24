@@ -22,7 +22,8 @@
     "dashboard": "tsx scripts/start-dashboard.ts",
     "typecheck": "tsc --noEmit",
     "notify:events": "tsx scripts/notify-events.ts",
-    "notify:report": "tsx scripts/notify-report.ts"
+    "notify:report": "tsx scripts/notify-report.ts",
+    "sell:omo": "tsx scripts/sell-omo.ts"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "^1.4.1",
