@@ -3,7 +3,7 @@
 // (recovery-exit, hard-stop, flip-candidate, claim) → ALERTE Telegram.
 // EXÉCUTION HUMAINE : en pilote, jamais auto — le message porte le kill-switch.
 // Usage : npm run real:monitor (cron */15 via dlmm-run.sh)
-import { db, blacklistToken } from "../src/db.js";
+import { db, blacklistToken, isBlacklistableToken } from "../src/db.js";
 import { config } from "../src/config.js";
 import { coolingOffState, inFeeSurge } from "../src/volume.js";
 import { getTelegramCreds, sendTelegram } from "../src/telegram.js";
@@ -90,12 +90,16 @@ async function autoClose(
         .prepare(`SELECT volume_24h FROM pool_scans WHERE pool_address = ? ORDER BY scanned_at DESC LIMIT 1`)
         .get(String(pos.pool_address)) as { volume_24h: number | null } | undefined;
       if (scan?.volume_24h != null && scan.volume_24h < config.postCloseVolMin24h) {
-        blacklistToken(
-          String(pos.token_x_symbol ?? pos.name ?? "?").toLowerCase(),
-          config.postCloseBlacklistHours,
-          `real close ${reason} — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ (chart mort)`,
-          String(pos.pool_address)
-        );
+        const tokenKey = String(pos.token_x_symbol ?? pos.name ?? "?").toLowerCase();
+        // Quotes réservées exclues (revue 2026-08-24) — voir src/db.ts.
+        if (isBlacklistableToken(tokenKey)) {
+          blacklistToken(
+            tokenKey,
+            config.postCloseBlacklistHours,
+            `real close ${reason} — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ (chart mort)`,
+            String(pos.pool_address)
+          );
+        }
       }
     }
     const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
@@ -223,6 +227,10 @@ export async function realMonitor(): Promise<number> {
     const isDip = pos.strategy === "bidask-dip";
     const isFlip = pos.strategy === "bidask-flip";
     const isDipLike = isDip || isFlip;
+    // Garde « surtension » (gud, revue 2026-08-24) : tenir uniquement si la
+    // position est IN RANGE (les fees s'accumulent) — OOR = 0 fee, rien à
+    // protéger (piège omo #7/#8 : recovery à breakeven après passage en token).
+    const surgeHold = isDip && inFeeSurge(pool) && inRange;
     const killCmd = `REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE npm run real:close -- --pubkey ${pos.position_pubkey} --pool ${pos.pool_address} --bps 10000`;
 
     // 1) Hard-stop (miroir paper) : dip → échelle = stop, seuil élargi 0.85 ;
@@ -256,7 +264,7 @@ export async function realMonitor(): Promise<number> {
     // Garde « surtension » (gud, 2026-08-24) : pas de recovery-exit pendant
     // que le dynamic fee imprime (fenêtre où les fees paient l'IL). Limitée
     // au bidask-dip — le flip distribue, le Bollinger reste son exit.
-    if (isDipLike && prevUnderwater && netPnlSol >= 0 && !(isDip && inFeeSurge(pool))) {
+    if (isDipLike && prevUnderwater && netPnlSol >= 0 && !surgeHold) {
       if (config.realExitAuto) {
         const m = await autoClose(
           pos,
@@ -378,9 +386,9 @@ export async function realMonitor(): Promise<number> {
     //    kill-switch que recovery/hard-stop. Garde miroir du paper :
     //    bidask-dip → pas de verrouillage de perte > COOLING_MAX_LOSS_BIDASK
     //    (leçon Bollinger 2026-08-18) ; topblast sans garde.
-    // Garde « surtension » (gud, 2026-08-24) : miroir du paper — sur l'échelle
-    // anti-dump, pas de cooling-off pendant que le dynamic fee imprime.
-    if ((pos.strategy === "topblast" || (isDip && !inFeeSurge(pool))) && config.coolingExitEnabled) {
+    // Garde « surtension » (gud, 2026-08-24, revue) : miroir du paper — pas de
+    // cooling-off pendant que le dynamic fee imprime, SAUF si OOR (surgeHold).
+    if ((pos.strategy === "topblast" || !surgeHold) && config.coolingExitEnabled) {
       const cool = coolingOffState(String(pos.pool_address));
       if (cool && cool.ratio < config.coolingRatio) {
         const lossRatio = refSol > 0 ? -netPnlSol / refSol : 0;

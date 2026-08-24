@@ -291,3 +291,14 @@ export function isTokenBlacklisted(
     .get(tokenKey.toLowerCase(), Date.now()) as { until: number; reason: string } | undefined;
   return row ?? null;
 }
+
+// Quotes de base — ne JAMAIS les blacklister : ils peuvent apparaître en
+// token_x de pools (ex. SOL-USDC, SOL-cbBTC… 14 235 scans « SOL » en X sur 7 j
+// — revue 2026-08-24) et un close à petit volume les blacklisterait, bloquant
+// TOUT le book (les candidats open-paper prennent la clé = token_x.symbol).
+export const RESERVED_QUOTE_TOKENS = new Set(["sol", "wsol", "usdc", "usdt"]);
+
+/** True si le token peut être blacklisté (pas une quote réservée). */
+export function isBlacklistableToken(tokenKey: string): boolean {
+  return !RESERVED_QUOTE_TOKENS.has(tokenKey.toLowerCase());
+}

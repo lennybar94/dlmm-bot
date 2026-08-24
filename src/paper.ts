@@ -1,7 +1,7 @@
 // Moteur PAPER : positions simulées, frais simulés, IL concentré, triggers.
 // Aucune transaction réelle n'est possible ici — PAPER ONLY par construction.
 
-import { db, logEvent, blacklistToken } from "./db.js";
+import { db, logEvent, blacklistToken, isBlacklistableToken } from "./db.js";
 import { config } from "./config.js";
 import { fetchPool } from "./api.js";
 import { STRATEGY_PRESETS, binIdFromPrice, depositForPool } from "./strategies.js";
@@ -312,6 +312,14 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // retrait 2026-08-18, voir le bloc Bollinger plus bas.)
   const isDipLike = isDip || isFlip;
   const isQuick = pos.strategy === "topblast";
+  // Garde « surtension » (playbook gud, 2026-08-24, revue 2026-08-24) : tenir
+  // la position pendant que le dynamic fee imprime — MAIS SEULEMENT si elle
+  // est IN RANGE (les fees s'accumulent). Hors range = 0 fee : rien à
+  // protéger, et retenir une position OOR reproduirait le piège omo #7/#8
+  // (close recovery à breakeven APRÈS le passage en token). Données : les
+  // surges durent ≤ 20 min avec volume 10× (CATE, 48h) — la garde est un
+  // délai court, pas un hold forcé.
+  const surgeHold = isDip && inFeeSurge(pool) && ev.inRange;
   // Hard stop : chute > maxDailyDrop entre le prix de début de journée et maintenant.
   // bidask-dip : l'échelle EST le stop (achat de la chute jusqu'à -75%) → stop
   // élargi à -85% (protection rug seulement), pas de stop quotidien.
@@ -366,8 +374,9 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // fenêtre où les fees paient l'IL), on NE SORT PAS sur momentum refroidi —
   // le post gud a tenu sa position pendant tout le dump (0 rebalance, +3.82%
   // sur un -50%, 24h fees/TVL 67%). topblast : non concerné (pas d'IL,
-  // « fast in fast out »).
-  if (isQuick || (isDip && !inFeeSurge(pool))) {
+  // « fast in fast out »). surgeHold = tenir uniquement si IN RANGE (revue
+  // 2026-08-24) : OOR = 0 fee, rien à protéger.
+  if (isQuick || !surgeHold) {
     const cool = coolingOffState(pos.pool_address);
     if (cool && cool.ratio < config.coolingRatio) {
       const lossRatio = pos.deposit_usd > 0 ? (pos.deposit_usd - (valueUsd + fees)) / pos.deposit_usd : 0;
@@ -413,8 +422,9 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // Garde « surtension » (gud, 2026-08-24) : pas de recovery-exit au breakeven
   // pendant que le dynamic fee imprime (le post était up +20 SOL mid-dump et a
   // tenu). Limitée au bidask-dip : le flip distribue (le Bollinger reste son
-  // exit), le topblast sort vite par construction.
-  if (isDipLike && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd && !(isDip && inFeeSurge(pool))) {
+  // exit), le topblast sort vite par construction. surgeHold = in RANGE seul
+  // (revue 2026-08-24) : une position OOR ne gagne plus de fees.
+  if (isDipLike && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd && !surgeHold) {
     closePosition(pos.id, "recovery-exit", `PnL net ≥ 0 au rebond : value ${valueUsd.toFixed(2)}$ + fees ${fees.toFixed(2)}$ ≥ ${pos.deposit_usd}$ (fees incluses)`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
@@ -521,17 +531,21 @@ export function closePosition(id: number, reason: string, detail = ""): void {
       .get(pos.pool_address) as { volume_24h: number | null } | undefined;
     if (scan?.volume_24h != null && scan.volume_24h < config.postCloseVolMin24h) {
       const tokenKey = (pos.token_x_symbol ?? pos.name ?? "?").toLowerCase();
-      blacklistToken(
-        tokenKey,
-        config.postCloseBlacklistHours,
-        `close ${reason} — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ (chart mort)`,
-        pos.pool_address
-      );
-      logEvent(
-        "blacklist",
-        `🚫 Token ${pos.token_x_symbol ?? pos.name} blacklisté ${config.postCloseBlacklistHours}h — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ au close (${reason})`,
-        { positionId: id, poolAddress: pos.pool_address }
-      );
+      // Quotes réservées exclues (revue 2026-08-24) : « sol » est le token_x
+      // le plus fréquent (SOL-USDC…) — blacklister une quote bloquerait tout.
+      if (isBlacklistableToken(tokenKey)) {
+        blacklistToken(
+          tokenKey,
+          config.postCloseBlacklistHours,
+          `close ${reason} — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ (chart mort)`,
+          pos.pool_address
+        );
+        logEvent(
+          "blacklist",
+          `🚫 Token ${pos.token_x_symbol ?? pos.name} blacklisté ${config.postCloseBlacklistHours}h — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ au close (${reason})`,
+          { positionId: id, poolAddress: pos.pool_address }
+        );
+      }
     }
   }
 }
