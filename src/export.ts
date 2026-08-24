@@ -190,8 +190,9 @@ export async function exportData(): Promise<string> {
     }));
 
   // Pilote RÉEL (positions ouvertes + dernier mark chacune) — le dashboard
-  // principal ne montrait que le paper ; le réel vivait sur pool.html +
-  // Telegram + rapport. Ajouté 2026-08-23 (demande David).
+  // principal ne montrait que le paper ; le réel vivait sur pool.html (page
+  // dédiée, supprimée le 2026-08-24) + Telegram + rapport.
+  // Ajouté 2026-08-23 (demande David).
   const realRows = (db
     .prepare(
       `SELECT rp.id, rp.name, rp.strategy, rp.pool_address, rp.deposit_usd, rp.amount_y,
