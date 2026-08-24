@@ -83,6 +83,20 @@ async function autoClose(
     db.prepare(
       `UPDATE real_positions SET status='closed', closed_at=?, close_reason=?, sig=? WHERE id=?`
     ).run(Date.now(), reason, sig, id);
+    // Cooldown de ré-ouverture (validé David 2026-08-24) : après TOUT close
+    // réel, le token est interdit de ré-entrée TOKEN_REOPEN_COOLDOWN_HOURS —
+    // indépendant du volume (la blacklist vol ne couvre pas les dumps en
+    // cours ; le cron open:paper ré-ouvrirait le même token dans l'heure).
+    // Le 48h vol ci-dessous écrase si déclenché (cas le plus strict gagne).
+    const reopenKey = String(pos.token_x_symbol ?? pos.name ?? "?").toLowerCase();
+    if (isBlacklistableToken(reopenKey)) {
+      blacklistToken(
+        reopenKey,
+        config.tokenReopenCooldownHours,
+        `cooldown ré-ouverture après close ${reason}`,
+        String(pos.pool_address)
+      );
+    }
     // Blacklist post-close (playbook gud, 2026-08-24) : chart mort → pas de
     // ré-entrée (leçon omo : 6 ré-ouvertures sur le même token en 24h).
     if (config.postCloseBlacklistEnabled) {

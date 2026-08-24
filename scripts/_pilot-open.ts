@@ -57,7 +57,7 @@ if (!send) {
         `\n     dep=${dep}$ ≈ ${depositY.toFixed(4)} SOL (yUsd=${yUsd.toFixed(2)}$) · spread ${spread} bins (≈ −${cov.toFixed(0)} % sous le prix${spread < spreadRaw ? `, clampé depuis ${spreadRaw}` : ""})` +
         `\n     dipTarget=${(h.dipTarget ?? 0).toFixed(3)} drawdown24h=${((h.drawdown24h ?? 0) * 100).toFixed(1)}%` +
         (h.fibZone ? ` fibZone=${h.fibZone.level50}→${h.fibZone.level786}` : "") +
-        (isTokenBlacklisted(p.token_x.symbol ?? p.name) ? `\n     🚫 TOKEN BLACKLISTÉ post-close — ne pas ouvrir` : "") +
+        (isTokenBlacklisted(p.token_x.symbol ?? p.name) ? `\n     🚫 Token en cooldown/blacklist post-close — ne pas ouvrir` : "") +
         `\n`
     );
   }

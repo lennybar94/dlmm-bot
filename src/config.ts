@@ -77,6 +77,13 @@ export const config = {
   // du cycle mesuré, plancher de rentabilité ~300$). Le PAPER garde le
   // sizing satsmonkes pur (benchmark).
   realPositionUsdCap: num("REAL_POSITION_USD_CAP", 335),
+  // Cooldown de ré-ouverture par token après TOUT close réel (validé David
+  // 2026-08-24) : indépendant du volume — la blacklist vol (100k$) ne couvre
+  // pas les dumps en cours, et le cron open:paper ré-ouvrirait le même token
+  // dans l'heure qui suit un close (leçon omo : 6 ré-ouvertures en 24h).
+  // Le token reste interdit de ré-entrée cette durée même s'il est toujours
+  // top du scan ; la blacklist 48h vol prend le relais si le volume meurt.
+  tokenReopenCooldownHours: num("TOKEN_REOPEN_COOLDOWN_HOURS", 6),
   // Sweep des résidus post-close (leçon omo 24/08 : le gain marqué n'est
   // réalisé qu'en cash — un résidu token peut dumper -41% en une nuit).
   // Après un close, les tokens résiduels du wallet (hors positions ouvertes)

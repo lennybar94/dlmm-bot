@@ -5,7 +5,7 @@
 //   npm run real:close -- --pubkey <addr>    # ferme par clé de position on-chain
 //   npm run real:close -- --pool <addr> --pubkey <addr> --bps 5000
 // Après succès on-chain : la ligne real_positions passe en 'closed'.
-import { db } from "../src/db.js";
+import { db, blacklistToken, isBlacklistableToken } from "../src/db.js";
 import { config } from "../src/config.js";
 import { realClosePosition } from "../src/real.js";
 
@@ -83,6 +83,21 @@ for (const t of targets) {
         sig,
         t.id
       );
+      // Cooldown de ré-ouverture (validé David 2026-08-24) : même après un
+      // close MANUEL, le token est interdit de ré-entrée 6h — le cron
+      // open:paper ne doit pas ré-ouvrir la même paire dans l'heure.
+      const row = db
+        .prepare(`SELECT token_x_symbol FROM real_positions WHERE id = ?`)
+        .get(t.id) as { token_x_symbol: string | null } | undefined;
+      const reopenKey = (row?.token_x_symbol ?? "").toLowerCase();
+      if (reopenKey && isBlacklistableToken(reopenKey)) {
+        blacklistToken(
+          reopenKey,
+          config.tokenReopenCooldownHours,
+          "cooldown ré-ouverture après close manuel",
+          t.pool
+        );
+      }
     }
   } catch (e) {
     console.error(`  ❌ ${t.pubkey.slice(0, 12)}… : ${(e as Error).message}`);
