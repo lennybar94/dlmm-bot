@@ -112,3 +112,25 @@ export function coolingOffState(poolAddress: string, now = Date.now()): CoolingS
     windowMin: (pts[pts.length - 1].t - pts[0].t) / 60_000,
   };
 }
+
+/**
+ * Surtension de dynamic fee (playbook gud, 2026-08-24) : pendant un dump
+ * violent, le dynamic fee du pool explose (>1% sur CATE, ≈ 2× la base)
+ * EXACTEMENT quand le volume est vertical — la fenêtre où les fees paient
+ * l'IL (« I didn't touch it, the position was built for this scenario »).
+ * Utilisée par : badge au scan, garde d'exit cooling-off/recovery (paper +
+ * réel, bidask-dip uniquement — le flip distribue et le topblast sort vite
+ * par construction). Accepte la forme normalisée (base_fee_pct/dynamic_fee_pct
+ * plats — api.ts) ET la forme brute Data API (pool_config.base_fee_pct).
+ */
+export function inFeeSurge(pool: {
+  dynamic_fee_pct?: number | null;
+  base_fee_pct?: number | null;
+  pool_config?: { base_fee_pct?: number | null } | null;
+}): boolean {
+  if (!config.dynamicFeeSurgeEnabled) return false;
+  const dyn = Number(pool.dynamic_fee_pct ?? 0);
+  const base = Number(pool.base_fee_pct ?? pool.pool_config?.base_fee_pct ?? 0);
+  if (!(dyn > 0) || !(base > 0)) return false;
+  return dyn > config.dynamicFeeSurgeMinAbs && dyn > config.dynamicFeeSurgeMult * base;
+}

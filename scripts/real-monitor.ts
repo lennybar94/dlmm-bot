@@ -3,9 +3,9 @@
 // (recovery-exit, hard-stop, flip-candidate, claim) → ALERTE Telegram.
 // EXÉCUTION HUMAINE : en pilote, jamais auto — le message porte le kill-switch.
 // Usage : npm run real:monitor (cron */15 via dlmm-run.sh)
-import { db } from "../src/db.js";
+import { db, blacklistToken } from "../src/db.js";
 import { config } from "../src/config.js";
-import { coolingOffState } from "../src/volume.js";
+import { coolingOffState, inFeeSurge } from "../src/volume.js";
 import { getTelegramCreds, sendTelegram } from "../src/telegram.js";
 import { getSolPriceUsd } from "../src/export.js";
 import { realClosePosition } from "../src/real.js";
@@ -83,6 +83,21 @@ async function autoClose(
     db.prepare(
       `UPDATE real_positions SET status='closed', closed_at=?, close_reason=?, sig=? WHERE id=?`
     ).run(Date.now(), reason, sig, id);
+    // Blacklist post-close (playbook gud, 2026-08-24) : chart mort → pas de
+    // ré-entrée (leçon omo : 6 ré-ouvertures sur le même token en 24h).
+    if (config.postCloseBlacklistEnabled) {
+      const scan = db
+        .prepare(`SELECT volume_24h FROM pool_scans WHERE pool_address = ? ORDER BY scanned_at DESC LIMIT 1`)
+        .get(String(pos.pool_address)) as { volume_24h: number | null } | undefined;
+      if (scan?.volume_24h != null && scan.volume_24h < config.postCloseVolMin24h) {
+        blacklistToken(
+          String(pos.token_x_symbol ?? pos.name ?? "?").toLowerCase(),
+          config.postCloseBlacklistHours,
+          `real close ${reason} — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ (chart mort)`,
+          String(pos.pool_address)
+        );
+      }
+    }
     const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
     logEvent("real-auto-close", m, id, String(pos.pool_address));
     return m;
@@ -238,7 +253,10 @@ export async function realMonitor(): Promise<number> {
 
     // 2) Recovery-exit (dip/flip — playbook Djedje20x) : PnL net ≥ 0 au rebond,
     //    fees incluses, condition « était sous l'eau au mark précédent ».
-    if (isDipLike && prevUnderwater && netPnlSol >= 0) {
+    // Garde « surtension » (gud, 2026-08-24) : pas de recovery-exit pendant
+    // que le dynamic fee imprime (fenêtre où les fees paient l'IL). Limitée
+    // au bidask-dip — le flip distribue, le Bollinger reste son exit.
+    if (isDipLike && prevUnderwater && netPnlSol >= 0 && !(isDip && inFeeSurge(pool))) {
       if (config.realExitAuto) {
         const m = await autoClose(
           pos,
@@ -360,7 +378,9 @@ export async function realMonitor(): Promise<number> {
     //    kill-switch que recovery/hard-stop. Garde miroir du paper :
     //    bidask-dip → pas de verrouillage de perte > COOLING_MAX_LOSS_BIDASK
     //    (leçon Bollinger 2026-08-18) ; topblast sans garde.
-    if ((pos.strategy === "topblast" || isDip) && config.coolingExitEnabled) {
+    // Garde « surtension » (gud, 2026-08-24) : miroir du paper — sur l'échelle
+    // anti-dump, pas de cooling-off pendant que le dynamic fee imprime.
+    if ((pos.strategy === "topblast" || (isDip && !inFeeSurge(pool))) && config.coolingExitEnabled) {
       const cool = coolingOffState(String(pos.pool_address));
       if (cool && cool.ratio < config.coolingRatio) {
         const lossRatio = refSol > 0 ? -netPnlSol / refSol : 0;

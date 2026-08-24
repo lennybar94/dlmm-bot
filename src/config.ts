@@ -126,6 +126,25 @@ export const config = {
   // RÉELLE du mark précédent pour être considéré sous l'eau (paper et réel).
   recoveryEpsUsd: num("RECOVERY_EPS_USD", 1),
 
+  // Dynamic fee en surtension (playbook gud, 2026-08-24) : « le dynamic fee a
+  // fait le travail » — pendant le dump CATE il a dépassé 1% (≈ 2× la base)
+  // EXACTEMENT quand le volume était vertical : la fenêtre où les fees paient
+  // l'IL. Signal « ⚡ » au scan (info, sans impact score) + GARDE d'exit :
+  // ne pas sortir (cooling-off / recovery-exit) sur bidask-dip pendant la
+  // surtension — « I didn't touch it, the position was built for this ».
+  dynamicFeeSurgeEnabled: bool("DYNAMIC_FEE_SURGE_ENABLED", true),
+  dynamicFeeSurgeMult: num("DYNAMIC_FEE_SURGE_MULT", 2), // × base_fee_pct requis
+  dynamicFeeSurgeMinAbs: num("DYNAMIC_FEE_SURGE_MIN_ABS", 0.5), // % absolu min (fees matérielles)
+
+  // Blacklist post-close (playbook gud, 2026-08-24) : « dead chart = dead
+  // position » — « fees only print when people are trading ». Après un close,
+  // si le volume 24h du pool est sous le seuil, le token est blacklisté
+  // POST_CLOSE_BLACKLIST_HOURS : on ne ré-entre pas sur un chart mort (leçon
+  // omo 23-24/08 : 6 ré-ouvertures sur le même token en 24 h).
+  postCloseBlacklistEnabled: bool("POST_CLOSE_BLACKLIST_ENABLED", true),
+  postCloseVolMin24h: num("POST_CLOSE_VOL_MIN_24H", 100_000), // vol 24h min au close
+  postCloseBlacklistHours: num("POST_CLOSE_BLACKLIST_HOURS", 48),
+
   // Radar « pool neuve qui chauffe » (RocketScan, 2026-08-23) : le post trie
   // par date de création et chasse le pool < 24 h qui chauffe immédiatement
   // (>50k$/5min). Notre topblast exige un spike ≥ 30k$/min — la variante

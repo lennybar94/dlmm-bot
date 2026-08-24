@@ -2,7 +2,7 @@
 // Usage : `npm run open:paper` (top MAX_POSITIONS) ou `--limit N` / `--strategy spot-wide`
 // Mode RÉEL (REAL_MODE=true dans .env) : ouvre de vraies positions via src/real.ts
 // et les enregistre dans real_positions (pilote — surveillance manuelle des exits).
-import { db } from "../src/db.js";
+import { db, isTokenBlacklisted } from "../src/db.js";
 import { config } from "../src/config.js";
 import { runScan } from "../src/scanner.js";
 import { openPaperPosition, getOpenPositions } from "../src/paper.js";
@@ -35,12 +35,20 @@ const scan = await runScan();
 let opened = 0;
 let skippedSameToken = 0;
 let skippedTopblastCap = 0;
+let skippedBlacklisted = 0;
 for (const opp of scan.opportunities) {
   if (opened >= Math.min(limit, slots)) break;
   if (openAddresses.has(opp.pool.address)) continue;
   const tokenKey = opp.pool.token_x.symbol?.toLowerCase() ?? opp.pool.name;
   if (openTokens.has(tokenKey)) {
     skippedSameToken++;
+    continue;
+  }
+  // Blacklist post-close (playbook gud, 2026-08-24) : « dead chart = dead
+  // position » — token fermé avec volume 24h < seuil → pas de ré-entrée
+  // pendant POST_CLOSE_BLACKLIST_HOURS (leçon omo : 6 ré-ouvertures).
+  if (isTokenBlacklisted(tokenKey)) {
+    skippedBlacklisted++;
     continue;
   }
   if (opp.strategyHint.strategy === "topblast") {
@@ -80,7 +88,8 @@ for (const opp of scan.opportunities) {
 console.log(
   `Terminé : ${opened} position(s) ouverte(s)` +
     `${skippedSameToken ? ` (${skippedSameToken} pool(s) sauté(s) : token déjà en portefeuille)` : ""}` +
-    `${skippedTopblastCap ? ` (${skippedTopblastCap} top blast sauté(s) : cap ${config.maxTopblastPositions} atteint)` : ""}.`
+    `${skippedTopblastCap ? ` (${skippedTopblastCap} top blast sauté(s) : cap ${config.maxTopblastPositions} atteint)` : ""}` +
+    `${skippedBlacklisted ? ` (${skippedBlacklisted} token(s) blacklisté(s) post-close)` : ""}.`
 );
 
 // Petit état du portefeuille

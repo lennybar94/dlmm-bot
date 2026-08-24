@@ -134,6 +134,19 @@ export function scorePool(
     if (feeDecay >= 0.6) signals.push(`fees durables (rythme 1h ≈ ${(feeDecay * 100).toFixed(0)}% de la moyenne 24h)`);
     else signals.push(`⚠️ fees en déclin (1h = ${(feeDecay * 100).toFixed(0)}% du rythme 24h) — le yield s'essouffle`);
   }
+  // Dynamic fee en surtension (playbook gud, 2026-08-24) : pendant le dump
+  // CATE le dynamic fee a dépassé 1% (≈ 2× la base) EXACTEMENT quand le
+  // volume était vertical — « the dynamic fee did the lifting ». La
+  // surtension = la fenêtre de harvest : les fees paient l'IL. Signal INFO
+  // (aucun impact score, comme feeDecay) — la garde d'exit vit dans
+  // markPosition/real-monitor (inFeeSurge, bidask-dip).
+  if (p.dynamic_fee_pct != null && p.base_fee_pct != null && p.base_fee_pct > 0) {
+    if (p.dynamic_fee_pct > config.dynamicFeeSurgeMinAbs && p.dynamic_fee_pct > config.dynamicFeeSurgeMult * p.base_fee_pct) {
+      signals.push(
+        `⚡ dynamic fee en surtension (${p.dynamic_fee_pct.toFixed(2)}% = ${(p.dynamic_fee_pct / p.base_fee_pct).toFixed(1)}× la base ${p.base_fee_pct.toFixed(2)}%)`
+      );
+    }
+  }
   // Profil réflexif (Lamsito_eth/$NET) : APR délirant + σ extrême = ponzinomics
   // — le yield peut être réel TANT QUE la demande tient, mais l'unwind est
   // violent si elle meurt (émissions dynamiques/premium absents côté DLMM).

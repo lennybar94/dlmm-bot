@@ -1,11 +1,11 @@
 // Moteur PAPER : positions simulées, frais simulés, IL concentré, triggers.
 // Aucune transaction réelle n'est possible ici — PAPER ONLY par construction.
 
-import { db, logEvent } from "./db.js";
+import { db, logEvent, blacklistToken } from "./db.js";
 import { config } from "./config.js";
 import { fetchPool } from "./api.js";
 import { STRATEGY_PRESETS, binIdFromPrice, depositForPool } from "./strategies.js";
-import { coolingOffState } from "./volume.js";
+import { coolingOffState, inFeeSurge } from "./volume.js";
 import { getRules } from "./rules.js";
 import { reviewPositionOnClose } from "./review.js";
 import type { MarkResult, OpportunityScore, PaperPositionRow, StrategyName } from "./types.js";
@@ -361,7 +361,13 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // garde anti-verrouillage de perte (leçon Bollinger 2026-08-18 : ne pas
   // vendre au creux) — on ne sort que si la perte < COOLING_MAX_LOSS_BIDASK.
   // bidask-flip : exclu — le Bollinger EST l'exit de la reprise.
-  if (isQuick || isDip) {
+  // Garde « surtension de dynamic fee » (playbook gud, 2026-08-24) : sur
+  // l'échelle anti-dump, quand le dynamic fee explose (dump violent = la
+  // fenêtre où les fees paient l'IL), on NE SORT PAS sur momentum refroidi —
+  // le post gud a tenu sa position pendant tout le dump (0 rebalance, +3.82%
+  // sur un -50%, 24h fees/TVL 67%). topblast : non concerné (pas d'IL,
+  // « fast in fast out »).
+  if (isQuick || (isDip && !inFeeSurge(pool))) {
     const cool = coolingOffState(pos.pool_address);
     if (cool && cool.ratio < config.coolingRatio) {
       const lossRatio = pos.deposit_usd > 0 ? (pos.deposit_usd - (valueUsd + fees)) / pos.deposit_usd : 0;
@@ -404,7 +410,11 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // rebond. Condition "sous l'eau au mark précédent" (fees incluses) pour ne
   // pas sortir à l'ouverture.
   const prevNetUnderwater = (pos.last_value_usd ?? 0) + (pos.fees_earned_usd ?? 0) + (pos.fees_claimed_usd ?? 0) < pos.deposit_usd - config.recoveryEpsUsd;
-  if (isDipLike && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd) {
+  // Garde « surtension » (gud, 2026-08-24) : pas de recovery-exit au breakeven
+  // pendant que le dynamic fee imprime (le post était up +20 SOL mid-dump et a
+  // tenu). Limitée au bidask-dip : le flip distribue (le Bollinger reste son
+  // exit), le topblast sort vite par construction.
+  if (isDipLike && prevNetUnderwater && valueUsd + fees >= pos.deposit_usd && !(isDip && inFeeSurge(pool))) {
     closePosition(pos.id, "recovery-exit", `PnL net ≥ 0 au rebond : value ${valueUsd.toFixed(2)}$ + fees ${fees.toFixed(2)}$ ≥ ${pos.deposit_usd}$ (fees incluses)`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
@@ -500,6 +510,30 @@ export function closePosition(id: number, reason: string, detail = ""): void {
     poolAddress: pos.pool_address,
   });
   reviewPositionOnClose({ ...pos, status: "closed", close_reason: reason, closed_at: Date.now() });
+
+  // Blacklist post-close (playbook gud, 2026-08-24) : « dead chart = dead
+  // position » — si le volume 24h du pool est sous le seuil à la fermeture,
+  // le token est blacklisté POST_CLOSE_BLACKLIST_HOURS : on ne ré-entre pas
+  // sur un chart mort (leçon omo : 6 ré-ouvertures sur le même token en 24h).
+  if (config.postCloseBlacklistEnabled) {
+    const scan = db
+      .prepare(`SELECT volume_24h FROM pool_scans WHERE pool_address = ? ORDER BY scanned_at DESC LIMIT 1`)
+      .get(pos.pool_address) as { volume_24h: number | null } | undefined;
+    if (scan?.volume_24h != null && scan.volume_24h < config.postCloseVolMin24h) {
+      const tokenKey = (pos.token_x_symbol ?? pos.name ?? "?").toLowerCase();
+      blacklistToken(
+        tokenKey,
+        config.postCloseBlacklistHours,
+        `close ${reason} — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ (chart mort)`,
+        pos.pool_address
+      );
+      logEvent(
+        "blacklist",
+        `🚫 Token ${pos.token_x_symbol ?? pos.name} blacklisté ${config.postCloseBlacklistHours}h — vol 24h ${(scan.volume_24h / 1000).toFixed(0)}k$ < ${(config.postCloseVolMin24h / 1000).toFixed(0)}k$ au close (${reason})`,
+        { positionId: id, poolAddress: pos.pool_address }
+      );
+    }
+  }
 }
 
 /** Recentre la position sur le bin actif (paper, avec friction). */

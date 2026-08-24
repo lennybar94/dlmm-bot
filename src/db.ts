@@ -200,6 +200,20 @@ CREATE TABLE IF NOT EXISTS rule_changes (
   after_value REAL,
   reason TEXT
 );
+
+-- Blacklist post-close (playbook gud, 2026-08-24) : « dead chart = dead
+-- position » — un token fermé avec un volume 24h < seuil est blacklisté
+-- POST_CLOSE_BLACKLIST_HOURS pour ne pas ré-entrer sur un chart mort
+-- (leçon omo : 6 ré-ouvertures sur le même token en 24 h). Clé = symbol
+-- token (minuscule), cohérente avec la dédup open-paper.
+CREATE TABLE IF NOT EXISTS token_blacklist (
+  token_key TEXT PRIMARY KEY,
+  blacklisted_at INTEGER NOT NULL,
+  until INTEGER NOT NULL,
+  reason TEXT,
+  pool_address TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_blacklist_until ON token_blacklist(until);
 `;
 
 db.exec(SCHEMA);
@@ -247,4 +261,33 @@ export function logEvent(
     message,
     opts.payload ? JSON.stringify(opts.payload) : null
   );
+}
+
+/** Blackliste un token (clé = symbol minuscule) pour `hours` heures. */
+export function blacklistToken(
+  tokenKey: string,
+  hours: number,
+  reason: string,
+  poolAddress?: string | null
+): void {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO token_blacklist (token_key, blacklisted_at, until, reason, pool_address)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(token_key) DO UPDATE SET
+       blacklisted_at = excluded.blacklisted_at,
+       until = excluded.until,
+       reason = excluded.reason,
+       pool_address = excluded.pool_address`
+  ).run(tokenKey.toLowerCase(), now, now + hours * 3_600_000, reason, poolAddress ?? null);
+}
+
+/** Retourne l'entrée blacklist encore active pour ce token, ou null. */
+export function isTokenBlacklisted(
+  tokenKey: string
+): { until: number; reason: string } | null {
+  const row = db
+    .prepare(`SELECT until, reason FROM token_blacklist WHERE token_key = ? AND until > ?`)
+    .get(tokenKey.toLowerCase(), Date.now()) as { until: number; reason: string } | undefined;
+  return row ?? null;
 }

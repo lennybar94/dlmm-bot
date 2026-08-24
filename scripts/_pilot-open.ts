@@ -7,7 +7,7 @@
 //   REAL_MODE=true REAL_CONFIRM=CONFIRMED-REAL-MODE \
 //     npx tsx scripts/_pilot-open.ts --pick=<pool_addr> --confirm=REAL-OPEN   # ENVOIE (process-local, .env intact)
 import { Keypair } from "@solana/web3.js";
-import { db } from "../src/db.js";
+import { db, isTokenBlacklisted } from "../src/db.js";
 import { config } from "../src/config.js";
 import { runScan } from "../src/scanner.js";
 import { depositForPool } from "../src/strategies.js";
@@ -57,6 +57,7 @@ if (!send) {
         `\n     dep=${dep}$ ≈ ${depositY.toFixed(4)} SOL (yUsd=${yUsd.toFixed(2)}$) · spread ${spread} bins (≈ −${cov.toFixed(0)} % sous le prix${spread < spreadRaw ? `, clampé depuis ${spreadRaw}` : ""})` +
         `\n     dipTarget=${(h.dipTarget ?? 0).toFixed(3)} drawdown24h=${((h.drawdown24h ?? 0) * 100).toFixed(1)}%` +
         (h.fibZone ? ` fibZone=${h.fibZone.level50}→${h.fibZone.level786}` : "") +
+        (isTokenBlacklisted(p.token_x.symbol ?? p.name) ? `\n     🚫 TOKEN BLACKLISTÉ post-close — ne pas ouvrir` : "") +
         `\n`
     );
   }
