@@ -252,6 +252,10 @@ function render(d) {
   if (hasReal) {
     const rs = real.summary;
     $("#realSection").style.display = "";
+    // KPI paper masqués en régime machine réelle (fix 24/08) : ils affichaient
+    // 0 par design (book paper vide) et trompaient — les vrais chiffres sont
+    // dans la section Pilote réel ci-dessus.
+    $("#kpis").style.display = "none";
     $("#realCount").textContent = rs.open;
     $("#realSummary").innerHTML = [
       `<span><b>Déployé</b> ${fmt(rs.deployedSol, 2)} SOL (${usd(rs.investedUsd)})</span>`,
@@ -272,6 +276,7 @@ function render(d) {
       </tr>`).join("");
   } else {
     $("#realSection").style.display = "none";
+    $("#kpis").style.display = "";
   }
 
   // Graphique : valeur agrégée du portefeuille
