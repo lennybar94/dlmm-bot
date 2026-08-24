@@ -23,6 +23,11 @@ const DATA_API = "https://dlmm.datapi.meteora.ag";
 const PILOT = "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk";
 const dryRun = process.argv.includes("--dry-run");
 
+// Log horodaté (audit 24/08) — le log cron sweep.log était illisible sans timestamp.
+const ts = () => new Date().toISOString().replace("T", " ").slice(0, 19);
+const log = (...a: unknown[]) => console["log"](`[${ts()}]`, ...a);
+const err = (...a: unknown[]) => console["error"](`[${ts()}]`, ...a);
+
 db.exec(`CREATE TABLE IF NOT EXISTS residue_sweeps (
   token_key TEXT PRIMARY KEY,
   pool_address TEXT,
@@ -31,12 +36,12 @@ db.exec(`CREATE TABLE IF NOT EXISTS residue_sweeps (
 )`);
 
 if (config.cluster !== "mainnet-beta") {
-  console.error("⛔ CLUSTER≠mainnet-beta — sweep annulé.");
+  err("⛔ CLUSTER≠mainnet-beta — sweep annulé.");
   process.exit(1);
 }
 const signer = Keypair.fromSecretKey(Buffer.from(config.walletPrivateKey, "base64"));
 if (signer.publicKey.toBase58() !== PILOT) {
-  console.error(`⛔ Clé ${signer.publicKey.toBase58()} ≠ wallet pilote ${PILOT} — abandon.`);
+  err(`⛔ Clé ${signer.publicKey.toBase58()} ≠ wallet pilote ${PILOT} — abandon.`);
   process.exit(1);
 }
 const conn = new Connection(config.rpcUrl, "confirmed");
@@ -86,7 +91,7 @@ try {
     walletTokens.push({ mint: info.mint, ui, decimals: Number(info.tokenAmount.decimals), raw: info.tokenAmount.amount });
   }
 } catch (e) {
-  console.log(`[sweep] ⚠️ scan programId échoué (${(e as Error).message}) — rattrapage par mint seul`);
+  log(`[sweep] ⚠️ scan programId échoué (${(e as Error).message}) — rattrapage par mint seul`);
 }
 for (const [mint] of mintMap) {
   if (seenMints.has(mint)) continue;
@@ -97,7 +102,7 @@ for (const [mint] of mintMap) {
       if (!info || info.mint === SOL_MINT) continue;
       const ui = Number(info.tokenAmount?.uiAmount ?? 0);
       if (ui <= 0) continue;
-      console.log(`[sweep] rattrapage mint ${mint.slice(0, 8)}… : ${ui.toLocaleString("fr-FR")} tokens (invisible au scan programId)`);
+      log(`[sweep] rattrapage mint ${mint.slice(0, 8)}… : ${ui.toLocaleString("fr-FR")} tokens (invisible au scan programId)`);
       walletTokens.push({ mint: info.mint, ui, decimals: Number(info.tokenAmount.decimals), raw: info.tokenAmount.amount });
     }
   } catch {
@@ -105,7 +110,7 @@ for (const [mint] of mintMap) {
   }
 }
 if (walletTokens.length === 0) {
-  console.log("[sweep] aucun token résiduel — rien à faire.");
+  log("[sweep] aucun token résiduel — rien à faire.");
   process.exit(0);
 }
 
@@ -117,7 +122,7 @@ let skippedUnknown = 0;
 for (const wt of walletTokens) {
   const entry = mintMap.get(wt.mint);
   if (!entry) {
-    console.log(`[sweep] token inconnu (mint ${wt.mint.slice(0, 8)}…) — skip (pas de pool de close récent)`);
+    log(`[sweep] token inconnu (mint ${wt.mint.slice(0, 8)}…) — skip (pas de pool de close récent)`);
     skippedUnknown++;
     continue;
   }
@@ -131,7 +136,7 @@ for (const wt of walletTokens) {
   const tokenKey = entry.symbol.toLowerCase();
 
   if (valueUsd < config.residueSwapMinUsd) {
-    console.log(`[sweep] ${entry.symbol} : ${wt.ui.toFixed(2)} tokens ≈ ${valueUsd.toFixed(2)}$ < seuil ${config.residueSwapMinUsd}$ — skip`);
+    log(`[sweep] ${entry.symbol} : ${wt.ui.toFixed(2)} tokens ≈ ${valueUsd.toFixed(2)}$ < seuil ${config.residueSwapMinUsd}$ — skip`);
     skippedLow++;
     continue;
   }
@@ -139,13 +144,13 @@ for (const wt of walletTokens) {
     | { last_swap_at: number }
     | undefined;
   if (last && Date.now() - last.last_swap_at < config.residueSwapCooldownMin * 60_000) {
-    console.log(`[sweep] ${entry.symbol} : cooldown actif — skip`);
+    log(`[sweep] ${entry.symbol} : cooldown actif — skip`);
     skippedCooldown++;
     continue;
   }
-  console.log(`[sweep] ${entry.symbol} : ${wt.ui.toLocaleString("fr-FR")} tokens ≈ ${valueUsd.toFixed(2)}$ (${valueSol.toFixed(3)} SOL) → swap sur ${entry.pool.slice(0, 8)}…`);
+  log(`[sweep] ${entry.symbol} : ${wt.ui.toLocaleString("fr-FR")} tokens ≈ ${valueUsd.toFixed(2)}$ (${valueSol.toFixed(3)} SOL) → swap sur ${entry.pool.slice(0, 8)}…`);
   if (dryRun) {
-    console.log(`  [dry-run] AUCUNE tx envoyée.`);
+    log(`  [dry-run] AUCUNE tx envoyée.`);
     continue;
   }
 
@@ -180,15 +185,15 @@ for (const wt of walletTokens) {
     logEvent("residue-sweep", msg, { poolAddress: entry.pool });
     const creds = getTelegramCreds();
     if (creds) await sendTelegram(creds.token, creds.chatId, msg);
-    console.log(`  ✅ ${entry.symbol} → +${gainSol.toFixed(4)} SOL (${sig.slice(0, 12)}…)`);
+    log(`  ✅ ${entry.symbol} → +${gainSol.toFixed(4)} SOL (${sig.slice(0, 12)}…)`);
     swapped++;
   } catch (e) {
-    const err = String(e).slice(0, 160);
-    const msg = `🚨 [${new Date().toLocaleTimeString("fr-FR")}] SWEEP ${entry.symbol} ÉCHOUÉ : ${err} — swap manuel possible (sell:omo pattern)`;
+    const errMsg = String(e).slice(0, 160);
+    const msg = `🚨 [${new Date().toLocaleTimeString("fr-FR")}] SWEEP ${entry.symbol} ÉCHOUÉ : ${errMsg} — swap manuel possible (sell:omo pattern)`;
     logEvent("residue-sweep-fail", msg, { poolAddress: entry.pool });
     const creds = getTelegramCreds();
     if (creds) await sendTelegram(creds.token, creds.chatId, msg);
-    console.error(`  🚨 ${entry.symbol} échec : ${err}`);
+    err(`  🚨 ${entry.symbol} échec : ${errMsg}`);
   }
 }
-console.log(`[sweep] terminé — ${swapped} swap(s), ${skippedLow} sous seuil, ${skippedCooldown} cooldown, ${skippedUnknown} inconnu(s)${dryRun ? " (DRY-RUN)" : ""}`);
+log(`[sweep] terminé — ${swapped} swap(s), ${skippedLow} sous seuil, ${skippedCooldown} cooldown, ${skippedUnknown} inconnu(s)${dryRun ? " (DRY-RUN)" : ""}`);
