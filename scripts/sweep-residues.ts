@@ -43,25 +43,7 @@ const conn = new Connection(config.rpcUrl, "confirmed");
 const solUsd = (await getSolPriceUsd()) ?? 93;
 const minValueSol = config.residueSwapMinUsd / solUsd;
 
-// 1) Tokens du wallet (hors SOL) avec solde > 0
-const parsed = await conn.getParsedTokenAccountsByOwner(signer.publicKey, {
-  programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-});
-const walletTokens: { mint: string; ui: number; decimals: number; raw: string }[] = [];
-for (const ta of parsed.value) {
-  const info = (ta.account.data as any).parsed?.info;
-  if (!info) continue;
-  if (info.mint === SOL_MINT) continue;
-  const ui = Number(info.tokenAmount?.uiAmount ?? 0);
-  if (ui <= 0) continue;
-  walletTokens.push({ mint: info.mint, ui, decimals: Number(info.tokenAmount.decimals), raw: info.tokenAmount.amount });
-}
-if (walletTokens.length === 0) {
-  console.log("[sweep] aucun token résiduel — rien à faire.");
-  process.exit(0);
-}
-
-// 2) Carte mint → {pool, symbol} depuis les closes récentes (48h) : les résidus
+// 1) Carte mint → {pool, symbol} depuis les closes récentes (48h) : les résidus
 // viennent des positions fermées. Fetch du détail Data API (token_x.address).
 const closedPools = (
   db.prepare(`SELECT DISTINCT pool_address, token_x_symbol FROM real_positions WHERE status='closed' AND closed_at > ?`).all(
@@ -79,6 +61,52 @@ for (const cp of closedPools) {
   } catch {
     /* pool indisponible — skip */
   }
+}
+
+// 2) Tokens du wallet (hors SOL) avec solde > 0.
+// ⚠️ PIÈGE INDEX RPC (découvert 24/08, LOOKSMAX) : getParsedTokenAccountsByOwner
+// filtré par programId RATE les comptes token créés récemment — l'ATA LOOKSMAX
+// créée par le close du 24/08 14:00 n'est jamais remontée par l'index (le filtre
+// par mint, lui, la trouve) → résidu jamais swappé (25 821 LOOKSMAX bloqués).
+// → scan programId + RATTRAPAGE systématique par mint pour chaque pool fermé
+// < 48h (déterministe, zéro dépendance à l'index).
+const walletTokens: { mint: string; ui: number; decimals: number; raw: string }[] = [];
+const seenMints = new Set<string>();
+try {
+  const parsed = await conn.getParsedTokenAccountsByOwner(signer.publicKey, {
+    programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+  });
+  for (const ta of parsed.value) {
+    const info = (ta.account.data as any).parsed?.info;
+    if (!info) continue;
+    if (info.mint === SOL_MINT) continue;
+    const ui = Number(info.tokenAmount?.uiAmount ?? 0);
+    if (ui <= 0) continue;
+    seenMints.add(info.mint);
+    walletTokens.push({ mint: info.mint, ui, decimals: Number(info.tokenAmount.decimals), raw: info.tokenAmount.amount });
+  }
+} catch (e) {
+  console.log(`[sweep] ⚠️ scan programId échoué (${(e as Error).message}) — rattrapage par mint seul`);
+}
+for (const [mint] of mintMap) {
+  if (seenMints.has(mint)) continue;
+  try {
+    const byMint = await conn.getParsedTokenAccountsByOwner(signer.publicKey, { mint: new PublicKey(mint) });
+    for (const ta of byMint.value) {
+      const info = (ta.account.data as any).parsed?.info;
+      if (!info || info.mint === SOL_MINT) continue;
+      const ui = Number(info.tokenAmount?.uiAmount ?? 0);
+      if (ui <= 0) continue;
+      console.log(`[sweep] rattrapage mint ${mint.slice(0, 8)}… : ${ui.toLocaleString("fr-FR")} tokens (invisible au scan programId)`);
+      walletTokens.push({ mint: info.mint, ui, decimals: Number(info.tokenAmount.decimals), raw: info.tokenAmount.amount });
+    }
+  } catch {
+    /* compte indisponible — skip */
+  }
+}
+if (walletTokens.length === 0) {
+  console.log("[sweep] aucun token résiduel — rien à faire.");
+  process.exit(0);
 }
 
 // 3) Pour chaque token du wallet : valeur + cooldown + swap
