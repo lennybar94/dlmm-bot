@@ -91,9 +91,11 @@ for (const opp of scan.opportunities) {
       skippedNotYOnly++;
       continue;
     }
-    const dep = depositForPool(opp.pool);
-    // Garde de solde : déployé + projeté ≤ REAL_MAX_DEPLOY_RATIO × solde —
-    // le cron open:paper ne peut pas sur-déployer le wallet (régime machine).
+    const dep = Math.min(depositForPool(opp.pool), config.realPositionUsdCap);
+    // Garde de solde : déployé + projeté ≤ REAL_MAX_DEPLOY_RATIO × CAPITAL
+    // TOTAL (déployé + libre) — correction 2026-08-24 : comparer au solde
+    // libre seul bloquait TOUTE réouverture après un close (maxDeploy
+    // rétrécissait avec le solde au lieu de suivre le capital).
     const depositY = dep / estimateYUsd(opp.pool);
     const balance = (await realCtx!.connection.getBalance(realCtx!.signer.publicKey)) / 1e9;
     const deployed = (
@@ -101,11 +103,11 @@ for (const opp of scan.opportunities) {
         s: number;
       }
     ).s;
-    const maxDeploy = balance * config.realMaxDeployRatio;
+    const maxDeploy = (deployed + balance) * config.realMaxDeployRatio;
     if (deployed + depositY > maxDeploy) {
       skippedSoldeGuard++;
       console.log(
-        `  ⛔ ${opp.pool.name} : ${depositY.toFixed(2)} SOL projetés → déployé ${deployed.toFixed(2)} + ${depositY.toFixed(2)} > ${maxDeploy.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${balance.toFixed(2)} SOL) — skip`
+        `  ⛔ ${opp.pool.name} : ${depositY.toFixed(2)} SOL projetés → déployé ${deployed.toFixed(2)} + ${depositY.toFixed(2)} > ${maxDeploy.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${(deployed + balance).toFixed(2)} SOL de capital) — skip`
       );
       continue;
     }

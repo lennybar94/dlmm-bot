@@ -70,6 +70,13 @@ export const config = {
   // (buffer gas + marge de manœuvre), appliquée à CHAQUE ouverture réelle
   // (cron open:paper compris). 0.8 = 80 % max déployés.
   realMaxDeployRatio: num("REAL_MAX_DEPLOY_RATIO", 0.8),
+  // Plafond de mise par position en mode RÉEL (décision David 2026-08-24) :
+  // le sizing satsmonkes par classe (500/1000/2000$) est calibré pour un
+  // capital 5-10k$ — avec 13.29 SOL il faut un sizing RELATIF au capital.
+  // REAL_POSITION_USD_CAP=335 + garde 80% → 3 positions de ~335$ (gas ~3%
+  // du cycle mesuré, plancher de rentabilité ~300$). Le PAPER garde le
+  // sizing satsmonkes pur (benchmark).
+  realPositionUsdCap: num("REAL_POSITION_USD_CAP", 335),
   // Sweep des résidus post-close (leçon omo 24/08 : le gain marqué n'est
   // réalisé qu'en cash — un résidu token peut dumper -41% en une nuit).
   // Après un close, les tokens résiduels du wallet (hors positions ouvertes)

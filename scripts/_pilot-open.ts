@@ -43,7 +43,7 @@ if (!send) {
   console.log(`DRY-RUN — ${sol.length} candidat(s) Y-only SOL bidask-dip (scan ${new Date().toISOString()}) :\n`);
   for (const o of sol.slice(0, 6)) {
     const p = o.pool;
-    const dep = depositForPool(p);
+    const dep = Math.min(depositForPool(p), config.realPositionUsdCap);
     const yUsd = estimateYUsd(p);
     const depositY = dep / yUsd;
     const h = o.strategyHint;
