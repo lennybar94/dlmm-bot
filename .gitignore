@@ -3,3 +3,6 @@ data/
 logs/
 .env
 *.log
+
+# Backups DB (lourds, jamais pushés)
+backups/
