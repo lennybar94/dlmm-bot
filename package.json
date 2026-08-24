@@ -23,7 +23,8 @@
     "typecheck": "tsc --noEmit",
     "notify:events": "tsx scripts/notify-events.ts",
     "notify:report": "tsx scripts/notify-report.ts",
-    "sell:omo": "tsx scripts/sell-omo.ts"
+    "sell:omo": "tsx scripts/sell-omo.ts",
+    "sweep:residues": "tsx scripts/sweep-residues.ts"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "^1.4.1",

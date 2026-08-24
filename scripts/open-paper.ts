@@ -5,9 +5,13 @@
 import { db, isTokenBlacklisted } from "../src/db.js";
 import { config } from "../src/config.js";
 import { runScan } from "../src/scanner.js";
-import { openPaperPosition, getOpenPositions } from "../src/paper.js";
+import { openPaperPosition, getOpenPositions, estimateYUsd } from "../src/paper.js";
 import { depositForPool } from "../src/strategies.js";
 import { realOpenPosition } from "../src/real.js";
+import { Connection, Keypair } from "@solana/web3.js";
+
+// Wallet pilote du bot (garde de clé — le .env doit porter CETTE clé).
+const PILOT = "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk";
 
 const args = process.argv.slice(2);
 const limitArg = args.find((a) => a.startsWith("--limit="));
@@ -36,6 +40,22 @@ let opened = 0;
 let skippedSameToken = 0;
 let skippedTopblastCap = 0;
 let skippedBlacklisted = 0;
+let skippedNotYOnly = 0;
+let skippedSoldeGuard = 0;
+
+// Contexte RÉEL créé une seule fois (garde de clé + solde).
+let realCtx: { connection: Connection; signer: Keypair } | null = null;
+if (config.realMode) {
+  realCtx = {
+    connection: new Connection(config.rpcUrl, "confirmed"),
+    signer: Keypair.fromSecretKey(Buffer.from(config.walletPrivateKey, "base64")),
+  };
+  if (realCtx.signer.publicKey.toBase58() !== PILOT) {
+    console.error(`⛔ Clé ${realCtx.signer.publicKey.toBase58()} ≠ wallet pilote ${PILOT} — abandon.`);
+    process.exit(1);
+  }
+  console.log(`✓ Mode RÉEL : wallet pilote ${PILOT} (garde clé OK)`);
+}
 for (const opp of scan.opportunities) {
   if (opened >= Math.min(limit, slots)) break;
   if (openAddresses.has(opp.pool.address)) continue;
@@ -59,8 +79,36 @@ for (const opp of scan.opportunities) {
     topblastSlots--;
   }
   if (config.realMode) {
-    // ---- PILOTE RÉEL : ouverture réelle + enregistrement local ----
+    // ---- RÉGIME MACHINE RÉELLE : ouverture réelle + enregistrement local ----
+    // Filtre Y-only SOL : le wallet ne détient que du SOL — une position
+    // balancée (spot/curve) exigerait des jetons absents → tx en échec
+    // (leçon 22/08 : TRUMP-USDC). Seules bidask-dip/topblast (oneSided y).
+    const ySym = (opp.pool.token_y.symbol ?? "").toUpperCase();
+    const yOnlyOk =
+      (ySym === "SOL" || ySym === "WSOL") &&
+      (opp.strategyHint.strategy === "bidask-dip" || opp.strategyHint.strategy === "topblast");
+    if (!yOnlyOk) {
+      skippedNotYOnly++;
+      continue;
+    }
     const dep = depositForPool(opp.pool);
+    // Garde de solde : déployé + projeté ≤ REAL_MAX_DEPLOY_RATIO × solde —
+    // le cron open:paper ne peut pas sur-déployer le wallet (régime machine).
+    const depositY = dep / estimateYUsd(opp.pool);
+    const balance = (await realCtx!.connection.getBalance(realCtx!.signer.publicKey)) / 1e9;
+    const deployed = (
+      db.prepare(`SELECT COALESCE(SUM(amount_y),0) s FROM real_positions WHERE status='open'`).get() as {
+        s: number;
+      }
+    ).s;
+    const maxDeploy = balance * config.realMaxDeployRatio;
+    if (deployed + depositY > maxDeploy) {
+      skippedSoldeGuard++;
+      console.log(
+        `  ⛔ ${opp.pool.name} : ${depositY.toFixed(2)} SOL projetés → déployé ${deployed.toFixed(2)} + ${depositY.toFixed(2)} > ${maxDeploy.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${balance.toFixed(2)} SOL) — skip`
+      );
+      continue;
+    }
     const r = await realOpenPosition(opp, dep);
     db.prepare(
       `INSERT INTO real_positions
@@ -89,7 +137,9 @@ console.log(
   `Terminé : ${opened} position(s) ouverte(s)` +
     `${skippedSameToken ? ` (${skippedSameToken} pool(s) sauté(s) : token déjà en portefeuille)` : ""}` +
     `${skippedTopblastCap ? ` (${skippedTopblastCap} top blast sauté(s) : cap ${config.maxTopblastPositions} atteint)` : ""}` +
-    `${skippedBlacklisted ? ` (${skippedBlacklisted} token(s) blacklisté(s) post-close)` : ""}.`
+    `${skippedBlacklisted ? ` (${skippedBlacklisted} token(s) blacklisté(s) post-close)` : ""}` +
+    `${skippedNotYOnly ? ` (${skippedNotYOnly} non Y-only SOL ignoré(s))` : ""}` +
+    `${skippedSoldeGuard ? ` (${skippedSoldeGuard} skip garde de solde)` : ""}.`
 );
 
 // Petit état du portefeuille

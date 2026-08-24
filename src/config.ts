@@ -65,6 +65,18 @@ export const config = {
   // process-local (JAMAIS dans .env — le cron open:paper doit rester paper).
   realExitAuto: bool("REAL_EXIT_AUTO", true),
   maxDailyDrop: num("MAX_DAILY_DROP", 0.4),
+  // Régime machine réelle (validé David 2026-08-24) : garde de solde — ne
+  // jamais déployer plus de REAL_MAX_DEPLOY_RATIO × solde SOL du wallet
+  // (buffer gas + marge de manœuvre), appliquée à CHAQUE ouverture réelle
+  // (cron open:paper compris). 0.8 = 80 % max déployés.
+  realMaxDeployRatio: num("REAL_MAX_DEPLOY_RATIO", 0.8),
+  // Sweep des résidus post-close (leçon omo 24/08 : le gain marqué n'est
+  // réalisé qu'en cash — un résidu token peut dumper -41% en une nuit).
+  // Après un close, les tokens résiduels du wallet (hors positions ouvertes)
+  // sont swappés en SOL si leur valeur ≥ RESIDUE_SWAP_MIN_USD.
+  residueSwapMinUsd: num("RESIDUE_SWAP_MIN_USD", 15),
+  residueSwapSlippageBps: num("RESIDUE_SWAP_SLIPPAGE_BPS", 500), // 5 % max
+  residueSwapCooldownMin: num("RESIDUE_SWAP_COOLDOWN_MIN", 30), // par token
 
   // Couverture de dump typée (playbook Tiagogo/MeteoraFR) : le target dépend du
   // profil du token — shitcoin récent pump.fun → -90%, token établi → -60/-70%.
