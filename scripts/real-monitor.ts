@@ -448,7 +448,9 @@ export async function realMonitor(): Promise<number> {
     //    (leçon Bollinger 2026-08-18) ; topblast sans garde.
     // Garde « surtension » (gud, 2026-08-24, revue) : miroir du paper — pas de
     // cooling-off pendant que le dynamic fee imprime, SAUF si OOR (surgeHold).
-    if ((pos.strategy === "topblast" || !surgeHold) && config.coolingExitEnabled) {
+    // topblast/resurrect : sans garde (« fast in fast out », Nowload : on sort
+    // quand le momentum refroidit).
+    if ((pos.strategy === "topblast" || pos.strategy === "resurrect" || !surgeHold) && config.coolingExitEnabled) {
       const cool = coolingOffState(String(pos.pool_address));
       if (cool && cool.ratio < config.coolingRatio) {
         const lossRatio = refSol > 0 ? -netPnlSol / refSol : 0;

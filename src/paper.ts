@@ -311,7 +311,7 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
   // distribution) : recovery-exit. (Le Bollinger est réservé au bidask-flip —
   // retrait 2026-08-18, voir le bloc Bollinger plus bas.)
   const isDipLike = isDip || isFlip;
-  const isQuick = pos.strategy === "topblast";
+  const isQuick = pos.strategy === "topblast" || pos.strategy === "resurrect";
   // Garde « surtension » (playbook gud, 2026-08-24, revue 2026-08-24) : tenir
   // la position pendant que le dynamic fee imprime — MAIS SEULEMENT si elle
   // est IN RANGE (les fees s'accumulent). Hors range = 0 fee : rien à

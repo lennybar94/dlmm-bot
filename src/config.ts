@@ -196,6 +196,25 @@ export const config = {
   accelMonitorTopN: num("ACCEL_MONITOR_TOP_N", 5),
   accelMonitorIntervalS: num("ACCEL_MONITOR_INTERVAL_S", 60),
 
+  // ♻️ Résurrection (Nowload 2026-08-25 — « LP sniping » ; complète HALO) :
+  // « an old forgotten token suddenly rising from the dead » / « a narrative
+  // unexpectedly regaining attention » — vieux token (> QUICK_MAX_POOL_AGE_DAYS,
+  // hors fenêtre topblast) en spike de volume SANS drawdown ≥ 30 % (le prix
+  // n'est pas dans un dump : la porte bidask-dip ne s'applique pas). Le post
+  // entre en SPOT one-side SOL large (~70 bins ≈ notre clamp 69) quand le
+  // volume explose et sort quand le momentum refroidit. Même plancher de spike
+  // que le topblast (30k$/min). STRATÉGIE OUVRABLE (décision David 2026-08-25
+  // — « le bot fait le choix des meilleures profits ») : mêmes gardes que le
+  // reste (cap 335$, solde 80 %, 1/token, Y-only, exits auto) + garde de
+  // fraîcheur du spike à l'ouverture (open-paper lit le dernier scan ≤
+  // OPEN_MAX_SCAN_AGE_MIN et revérifie le vol 30m — pas d'entrée zombie).
+  resurrectionMinVol30m: num("RESURRECTION_MIN_VOL_30M", 900_000),
+  // Fraîcheur du scan pour l'OUVERTURE (audit 2026-08-25, post Nowload) :
+  // open:paper lit le dernier scan (pool_scans, écrit */5 par le monitor) au
+  // lieu de re-scanner — un scan plus vieux que ce seuil bloque l'ouverture
+  // (les fenêtres de spike durent des minutes, pas des heures).
+  openMaxScanAgeMin: num("OPEN_MAX_SCAN_AGE_MIN", 10),
+
   // Astuce « trending court » (DucatelRomain03, 2026-08-17) : sur GMGN, le
   // filtre Trending 5 min + Volume ≥ 50k (≈ 10k$/min) sert à VOIR tôt les
   // tokens qui démarrent, pas à entrer tôt. Proxy DLMM : delta de volume_24h

@@ -72,6 +72,23 @@ export const STRATEGY_PRESETS: Record<string, StrategyPreset> = {
     oneSided: "y",
     description: "Spot SOL-only 10-15 bins — top blast (satsmonkes, ex-quick-inout Tikz) : première jambe haussière sur spike, fees en quelques minutes.",
   },
+  // ♻️ Résurrection (Nowload 2026-08-25 — « LP sniping » ; complète HALO) :
+  // vieux token (> 2 j, hors fenêtre topblast) qui se réveille — spike de
+  // volume SANS drawdown ≥ 30 % (le prix n'est pas dans un dump : la porte
+  // bidask-dip ne s'applique pas). Le post : SPOT one-side SOL « classic
+  // range ~70 bins » (≈ notre max on-chain 69) — la liquidité est répartie
+  // dans toute la range, on encaisse les fees tant que le volume tient, et
+  // on sort quand le momentum refroidit (« we disappear the moment the
+  // opportunity fades »). Largeur pilotée par la volatilité (20-34 bins/côté
+  // = 40-69 bins au total, clamp on-chain 69 dans real.ts).
+  "resurrect": {
+    name: "resurrect",
+    minBinsPerSide: 20,
+    maxBinsPerSide: 34,
+    sdkStrategy: "Spot",
+    oneSided: "y",
+    description: "Spot SOL-only 40-69 bins — résurrection (Nowload) : vieux token en spike de volume, fees tant que le momentum tient, sortie sur refroidissement.",
+  },
 };
 
 export const DEFAULT_STRATEGY = "spot-spread";
@@ -132,6 +149,27 @@ export function isTopBlastCandidate(p: {
   fee_tvl_ratio_30m: number;
 }): boolean {
   return isQuickInOutCandidate(p);
+}
+
+/**
+ * Candidat « résurrection » (Nowload 2026-08-25 — LP sniping ; complète HALO) :
+ * vieux token (> QUICK_MAX_POOL_AGE_DAYS, hors fenêtre topblast) qui se
+ * réveille — spike de volume 30m + frais qui tournent, SANS drawdown ≥ 30 %
+ * (le prix n'est pas dans un dump : la porte bidask-dip ne s'applique pas).
+ * Le post : « an old forgotten token suddenly rising from the dead » /
+ * « a narrative unexpectedly regaining CT's attention ». RADAR uniquement
+ * (score 0 → jamais ouvert en auto — rollout shadow→pilot→scale).
+ */
+export function isResurrectionCandidate(p: {
+  pool_age_days: number;
+  volume_30m: number;
+  fee_tvl_ratio_30m: number;
+}): boolean {
+  return (
+    p.pool_age_days > config.quickMaxPoolAgeDays &&
+    p.volume_30m >= config.resurrectionMinVol30m &&
+    p.fee_tvl_ratio_30m >= config.quickMinFeeTvlRatio30m
+  );
 }
 
 /**

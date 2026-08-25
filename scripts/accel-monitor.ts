@@ -1,11 +1,14 @@
 // Monitor accéléré (RocketScan, 2026-08-23) : le post rafraîchit toutes les
 // 5 s, nos scans à 5 min / marks à 15 min — le seul vrai gap structurel est le
 // TIMING. Ce script (cron * * * * * via dlmm-run.sh accel:monitor) surveille
-// les pools CHAUDES (top N par score du dernier scan), enregistre leur volume
-// dans accel_observations (deltas 60 s → l'exit « cooling off » de paper.ts
-// réagit en ≤ 1 min au lieu de 5) et marque les positions paper ouvertes sur
-// ces pools (tous les triggers, cadence 60 s — Bollinger/flip restent
-// cadence-indépendants via recentMarkPricesSince).
+// les pools CHAUDES (top N par score du dernier scan) et enregistre leur volume
+// dans accel_observations (historique 60 s). ⚠️ Depuis le fix des faux positifs
+// (2026-08-23 19:00), l'exit « cooling off » n'utilise QUE la série pool_scans
+// (volumeSeriesScansOnly — source unique cohérente) : les accel_observations
+// ne pilotent plus AUCUN exit. Les marks 60 s servent aux triggers de valeur
+// (Bollinger/flip restent cadence-indépendants via recentMarkPricesSince).
+// Les positions RÉELLES sont marquées par real-monitor (cron */5) — l'audit
+// 2026-08-25 (post Nowload) a rapproché sa cadence de 15 min → 5 min.
 import { config } from "../src/config.js";
 import { db } from "../src/db.js";
 import { fetchPool } from "../src/api.js";

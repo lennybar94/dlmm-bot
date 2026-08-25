@@ -57,7 +57,8 @@ export type StrategyName =
   | "bidask"
   | "bidask-dip"
   | "bidask-flip" // état post-flip d'une bidask-dip (distribution au-dessus du prix)
-  | "topblast"; // spike single-sided SOL (satsmonkes setup 1, ex-quick-inout Tikz)
+  | "topblast" // spike single-sided SOL (satsmonkes setup 1, ex-quick-inout Tikz)
+  | "resurrect"; // vieux token en spike (Nowload 2026-08-25 — SPOT SOL large, sortie sur refroidissement)
 
 export interface StrategyPreset {
   name: StrategyName;

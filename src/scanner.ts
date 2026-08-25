@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchNewestPools, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, fibSwingFromCandles, fibRetraceLevel, DEFAULT_STRATEGY } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, DEFAULT_STRATEGY } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -102,12 +102,12 @@ export function scorePool(
   const volStability = Math.min(1, p.volume_1h / Math.max(1, p.volume_24h / 24));
   const tvlScore = Math.min(1, Math.sqrt(p.tvl / 500_000));
   const farmBonus = p.farm_apr > 10 ? rules.farmBonus : 0;
-  // Stratégies tolérantes à la σ (bidask-dip, topblast) : l'échelle
+  // Stratégies tolérantes à la σ (bidask-dip, topblast, resurrect) : l'échelle
   // anti-dump et la sortie rapide SONT les protections contre la volatilité —
   // pas de pénalité (cohérent avec leur exemption du plafond σ au scan). La
   // pénalité ne s'applique qu'aux stratégies spot/curve où l'IL détruit les
   // gains. (Résout la contradiction scan-admet/score-pénalise.)
-  const sigmaTolerant = strategy === "bidask-dip" || strategy === "topblast";
+  const sigmaTolerant = strategy === "bidask-dip" || strategy === "topblast" || strategy === "resurrect";
   const volPenalty = vol24h > 1.2 && !sigmaTolerant ? rules.volPenalty : 0; // volatilité extrême
 
   let score =
@@ -163,6 +163,19 @@ export function scorePool(
   // — spike ≥ 30K$/min sur la fenêtre de trading réelle du playbook.
   if (p.volume_30m >= config.quickMinVolume30m)
     signals.push(`⚡ top blast (satsmonkes) : vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$ (≥30K$/min)`);
+  // 🍰 Volume / TVL (Nowload 2026-08-25 — « Volume is king, but TVL determines
+  // how many guests must share the cake ») : le volume par minute rapporté au
+  // TVL mesure la concurrence entre LPs — plus le ratio est haut, moins il y a
+  // de convives pour le gâteau de frais. Sur notre univers (MIN_TVL=50k$) les
+  // meilleurs pools font 2-4 %/min (MANLET 4,3 %/min au spike du 24/08). INFO
+  // seul (aucun impact score — fee_tvl_ratio capte déjà le partage du gâteau).
+  if (p.volume_30m > 0 && p.tvl > 0) {
+    const vTvlPerMin = p.volume_30m / 60 / p.tvl;
+    if (vTvlPerMin >= 0.02)
+      signals.push(
+        `🍰 V/TVL ${(vTvlPerMin * 100).toFixed(1)}%/min — le volume est roi, le TVL compte les convives (Nowload)`
+      );
+  }
   if (isQuickInOutCandidate(p))
     signals.push(`pool récent (${p.pool_age_days.toFixed(1)} j) + spike — première jambe (satsmonkes/Tikz)`);
   // Retiré 2026-08-20 (audit signaux, ROI −0.12% < baseline 0.90% sur 34 pos) :
@@ -258,13 +271,19 @@ export async function runScan(): Promise<ScanResult> {
       // position SERRÉE de quelques minutes — la protection EST l'exit
       // « OOR → pull » + « volume fade ». On ne lui applique pas le plafond σ.
       const quick = isQuickInOutCandidate(p);
+      // ♻️ Candidat résurrection (Nowload 2026-08-25, complète HALO) : vieux
+      // token (> 2 j, hors fenêtre topblast) en spike de volume SANS drawdown
+      // (le prix n'est pas dans un dump). Disjoint du topblast par l'âge et du
+      // bidask-dip par le drawdown — même famille de protection que le topblast
+      // (exemption σ : la sortie rapide EST la protection).
+      const resurrect = !quick && isResurrectionCandidate(p);
       // Candidat fee printer (0xmiir) : gros volume + gros fees/TVL 24h — les
       // meilleurs encaisseurs de frais (ANSEM/MANLET/TOAD/CATE) ont une σ
       // extrême (80-200%/j) et étaient EXCLUS par le plafond (antérieur au
       // playbook bidask-dip). L'échelle anti-dump + le filtre drawdown ≥ 30%
       // (entrée sur rebond) sont les protections.
       const feePrinter = isFeePrinterCandidate(p);
-      if (!quick && !feePrinter && vol > config.maxVol24h) {
+      if (!quick && !feePrinter && !resurrect && vol > config.maxVol24h) {
         rejected.push({
           pool: p,
           reason: `volatilité ${(vol * 100).toFixed(0)}% > max ${(config.maxVol24h * 100).toFixed(0)}%`,
@@ -284,9 +303,17 @@ export async function runScan(): Promise<ScanResult> {
       // pas l'échelle).
       let strategy = strategyForVolatility(vol, rules);
       if (quick) strategy = "topblast";
+      else if (resurrect) strategy = "resurrect";
       const { score, signals } = scorePool(p, vol, rules, strategy);
       if (quick)
         signals.push("⚡ top blast (satsmonkes) : première jambe — SOL-only 10-15 bins, fees en quelques minutes");
+      // ♻️ Résurrection (Nowload 2026-08-25) : vieux token en spike de volume
+      // sans drawdown — SPOT SOL large (40-69 bins, « classic range ~70 bins »
+      // du post), fees tant que le momentum tient, sortie sur refroidissement.
+      if (resurrect)
+        signals.push(
+          `♻️ résurrection (Nowload/HALO) : vieux token ${p.pool_age_days.toFixed(1)} j en spike vol 30m ${(p.volume_30m / 1000).toFixed(0)}k$ — SPOT SOL large 40-69 bins, sortie sur refroidissement`
+        );
       // Trending court (GMGN/DucatelRomain03) : delta de volume entre scans =
       // volume échangé pendant l'intervalle (≈ 5 min avec un scan rapproché).
       // Voir le démarrage tôt, avant que la fenêtre 30m de l'API ne confirme.
