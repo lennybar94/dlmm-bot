@@ -210,24 +210,36 @@ export async function exportData(): Promise<string> {
     .all() as Record<string, unknown>[]);
   const real = realRows.length
     ? {
-        positions: realRows.map((p) => ({
-          id: p.id,
-          // displayName (fix 2026-08-25) : la position CYBERLEEK s'affichait
-          // « -SOL » — fallback token_x-token_y quand l'API renvoie un nom vide.
-          name: displayName(p.name, p.token_x_symbol, p.token_y_symbol),
-          strategy: p.strategy,
-          pool_address: p.pool_address,
-          deposit_usd: p.deposit_usd,
-          amount_y_sol: p.amount_y,
-          min_bin_id: p.min_bin_id,
-          max_bin_id: p.max_bin_id,
-          position_pubkey: p.position_pubkey,
-          opened_at: p.opened_at,
-          value_usd: p.value_usd ?? null,
-          net_pnl_usd: p.net_pnl_usd ?? null,
-          in_range: p.in_range ?? null,
-          mark_taken_at: p.taken_at ?? null,
-        })),
+        positions: realRows.map((p) => {
+          // Flux temps réel (ws-pool-monitor, 2026-08-25) : activité 60 min
+          // + dernier bin connu + fraîcheur — phase 1 INFO, aucun exit branché.
+          const rt = db
+            .prepare(
+              `SELECT COUNT(*) n, MAX(active_bin_id) bin, MAX(ts) last FROM pool_events_rt WHERE pool_address = ? AND ts > ?`
+            )
+            .get(p.pool_address, now - 3_600_000) as { n: number; bin: number | null; last: number | null };
+          return {
+            id: p.id,
+            // displayName (fix 2026-08-25) : la position CYBERLEEK s'affichait
+            // « -SOL » — fallback token_x-token_y quand l'API renvoie un nom vide.
+            name: displayName(p.name, p.token_x_symbol, p.token_y_symbol),
+            strategy: p.strategy,
+            pool_address: p.pool_address,
+            deposit_usd: p.deposit_usd,
+            amount_y_sol: p.amount_y,
+            min_bin_id: p.min_bin_id,
+            max_bin_id: p.max_bin_id,
+            position_pubkey: p.position_pubkey,
+            opened_at: p.opened_at,
+            value_usd: p.value_usd ?? null,
+            net_pnl_usd: p.net_pnl_usd ?? null,
+            in_range: p.in_range ?? null,
+            mark_taken_at: p.taken_at ?? null,
+            rt_events_60m: rt.n ?? 0,
+            rt_bin: rt.bin ?? null,
+            rt_last_event_ms: rt.last ?? null,
+          };
+        }),
         summary: {
           open: realRows.length,
           investedUsd: realRows.reduce((a, p) => a + Number(p.deposit_usd ?? 0), 0),

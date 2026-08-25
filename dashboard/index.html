@@ -101,7 +101,7 @@
   <table id="realTable">
     <thead><tr>
       <th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>SOL déployés</th><th>Valeur</th><th>PnL net</th>
-      <th>Range (bins)</th><th>Pubkey</th><th>Ouverte</th>
+      <th>Range (bins)</th><th>Temps réel (ws)</th><th>Pubkey</th><th>Ouverte</th>
     </tr></thead>
     <tbody></tbody>
   </table>
@@ -271,6 +271,7 @@ function render(d) {
         <td>${usd(p.value_usd)}${p.in_range === 0 ? ' <span class="neg">OOR</span>' : ""}</td>
         <td class="${sign(p.net_pnl_usd)}">${usd(p.net_pnl_usd)}</td>
         <td>${p.min_bin_id} → ${p.max_bin_id}</td>
+        <td>${p.rt_events_60m ?? 0} ev/h<span title="bin temps réel (ws)">${p.rt_bin !== null && p.rt_bin !== undefined ? ` · bin ${p.rt_bin}` : ""}</span></td>
         <td class="mono">${String(p.position_pubkey || "").slice(0, 10)}…</td>
         <td>${dstr(p.opened_at)}</td>
       </tr>`).join("");
