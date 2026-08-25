@@ -169,7 +169,14 @@ export async function fetchPool(address: string): Promise<Pool> {
   return normalizePool(raw);
 }
 
-/** Bougies OHLCV 1h pour estimer la volatilité réalisée. */
+/**
+ * Bougies OHLCV pour estimer la volatilité réalisée.
+ * ⚠️ RÉALITÉ API (vérifié 2026-08-25) : l'endpoint IGNORE `interval`/`from`/`to`
+ * et renvoie TOUJOURS 10 bougies DAILY (champ `timestamp`, pas `time`), peu
+ * importe la fenêtre demandée → RSI/Supertrend/vol sont calculés sur ~10 jours,
+ * pas en intraday. Normalisation : `timestamp` → `time` (le tri par `a.time`
+ * comparaît des undefined → NaN → ordre non garanti avant ce fix).
+ */
 export async function fetchOhlcv(address: string, hours = 24): Promise<OhlcvCandle[]> {
   const now = Math.floor(Date.now() / 1000);
   const from = now - hours * 3600;
@@ -177,7 +184,14 @@ export async function fetchOhlcv(address: string, hours = 24): Promise<OhlcvCand
     `/pools/${address}/ohlcv`,
     { interval: "1h", from, to: now }
   );
-  const candles = res.data ?? res.candles ?? [];
+  const candles = (res.data ?? res.candles ?? []).map((c) => ({
+    time: (c as unknown as { timestamp?: number }).timestamp ?? (c.time ?? 0),
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  }));
   return candles.sort((a, b) => a.time - b.time);
 }
 

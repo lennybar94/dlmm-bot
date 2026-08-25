@@ -268,8 +268,11 @@ export async function realClaimRewards(poolAddress: string, positionPubkey: stri
   const pos = userPositions.find((x: any) => x.publicKey.toBase58() === positionPubkey);
   if (!pos) throw new Error(`position ${positionPubkey} introuvable sur le pool ${poolAddress}`);
 
+  // ⚠️ Le SDK destructure `{owner, position}` — passer `user` laissait `owner`
+  // undefined → `payer.toBuffer()` dans compileToV0Message (simulation CU) → TypeError.
+  // Fix 2026-08-25 (claim AUTO XST-SOL échoué à 17:15, fees 25.10$ restées on-chain).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tx = await (pool as any).claimAllRewardsByPosition({ position: pos, user: (user as any).publicKey });
+  const tx = await (pool as any).claimAllRewardsByPosition({ owner: (user as any).publicKey, position: pos });
   try {
     const ix = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 });
     if (tx?.instructions?.unshift) tx.instructions.unshift(ix);

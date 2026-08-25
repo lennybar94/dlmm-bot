@@ -78,13 +78,14 @@ export const config = {
   // (buffer gas + marge de manœuvre), appliquée à CHAQUE ouverture réelle
   // (cron open:paper compris). 0.8 = 80 % max déployés.
   realMaxDeployRatio: num("REAL_MAX_DEPLOY_RATIO", 0.8),
-  // Plafond de mise par position en mode RÉEL (décision David 2026-08-24) :
-  // le sizing satsmonkes par classe (500/1000/2000$) est calibré pour un
-  // capital 5-10k$ — avec 13.29 SOL il faut un sizing RELATIF au capital.
-  // REAL_POSITION_USD_CAP=335 + garde 80% → 3 positions de ~335$ (gas ~3%
-  // du cycle mesuré, plancher de rentabilité ~300$). Le PAPER garde le
-  // sizing satsmonkes pur (benchmark).
-  realPositionUsdCap: num("REAL_POSITION_USD_CAP", 335),
+  // Plafond de mise par position en mode RÉEL (décision David 2026-08-24,
+  // réévalué 2026-08-25) : le sizing satsmonkes par classe (500/1000/2000$) est
+  // calibré pour un capital 5-10k$. Avec 13.29 SOL il fallait un sizing RELATIF
+  // → cap 335$ (3 positions, gas ~3% du cycle, plancher de rentabilité ~300$).
+  // Avec 44.2 SOL (top-up David 25/08) le cap remonte à 500$ = la classe
+  // exploratoire (les pools meme tradees) ; la garde 80% reste le plafond réel
+  // du book (≈ 35 SOL déployés max). Le PAPER garde le sizing satsmonkes pur.
+  realPositionUsdCap: num("REAL_POSITION_USD_CAP", 500),
   // Cooldown de ré-ouverture par token après TOUT close réel (validé David
   // 2026-08-24) : indépendant du volume — la blacklist vol (100k$) ne couvre
   // pas les dumps en cours, et le cron open:paper ré-ouvrirait le même token
@@ -115,6 +116,10 @@ export const config = {
   // Entrée sur rebond : n'ouvrir une échelle bidask-dip que si le prix est déjà
   // ≥ ce drawdown sous son high 24h ("rentrer sur les rebonds après gros dumps").
   minDipDrawdown: num("MIN_DIP_DRAWDOWN", 0.3),
+  // Veto RSI (LP Army academy 2026-08-25) : pas d'échelle anti-dump quand le
+  // RSI(7, daily) est ≥ ce seuil — un RSI surachat APRÈS un dump ≥ 30% signale
+  // un blow-off top (pump verticale), la pire configuration pour une échelle.
+  rsiMaxEntryBidask: num("RSI_MAX_ENTRY_BIDASK", 70),
   // Diversification : max 1 position par token (les 3× ANSEM-SOL étaient 3 pools
   // du même token — risque corrélé zap-out, contre le playbook 6-7 positions).
   maxPositionsPerToken: num("MAX_POSITIONS_PER_TOKEN", 1),

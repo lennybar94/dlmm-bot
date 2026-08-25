@@ -246,6 +246,111 @@ export function realizedVolatility(candles: OhlcvCandle[]): number {
 }
 
 /**
+ * RSI (Relative Strength Index — lissage Wilder) sur les closes des bougies.
+ * Période par défaut 7 : l'OHLCV Data API ne renvoie que 10 bougies DAILY
+ * (l'interval est ignoré, vérifié 2026-08-25) → 14 exigerait 15 bougies et ne
+ * calculerait jamais. Ajout 2026-08-25 (LP Army academy) : indicateur de
+ * MOMENTUM, pas de direction — à croiser, jamais seul (règle du tuto «
+ * n'attendez pas qu'une seule info »). Usage : signal INFO au scan, aucune
+ * décision d'exit (leçon Bollinger 2026-08-18). Retourne null si échantillon
+ * insuffisant.
+ */
+export function rsi(candles: OhlcvCandle[], period = 7): number | null {
+  const closes = candles.map((c) => c.close).filter((c) => c > 0);
+  if (closes.length < period + 1) return null;
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) avgGain += diff;
+    else avgLoss -= diff;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+/**
+ * Supertrend (ATR, multiplier 3 — réglages Evil Panda/LogicalTA) sur les
+ * bougies. Période par défaut 7 : l'OHLCV Data API ne renvoie que 10 bougies
+ * DAILY (l'interval est ignoré, vérifié 2026-08-25). Retourne
+ * { trend: 1 haussier | -1 baissier, price } ou null si échantillon
+ * insuffisant. Ajout 2026-08-25 (LP Army academy) : signal INFO au scan —
+ * « en dessous de la supertrend = baissier, au-dessus = haussier » ; jamais un
+ * exit autonome (leçon Bollinger 2026-08-18).
+ */
+export function supertrend(
+  candles: OhlcvCandle[],
+  period = 7,
+  multiplier = 3
+): { trend: 1 | -1; price: number } | null {
+  if (candles.length < period + 1) return null;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const pc = candles[i - 1];
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - pc.close),
+      Math.abs(c.low - pc.close)
+    );
+    trs.push(tr);
+  }
+  // ATR Wilder
+  const atr: number[] = [];
+  const seed = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  atr.push(seed);
+  for (let i = period; i < trs.length; i++) {
+    atr.push((atr[atr.length - 1] * (period - 1) + trs[i]) / period);
+  }
+  // Supertrend standard (implémentation de référence : TradingView/Pine).
+  // ⚠️ BUG corrigé 2026-08-25 : le flip compare le close à la bande finale de
+  // la barre PRÉCÉDENTE (finalLower[1]/finalUpper[1]) — pas à celle de la barre
+  // courante (elle vient d'être réinitialisée au même instant → le close est
+  // presque toujours au-dessus → trend bloqué haussier, même en baisse franche).
+  let upTrend = true;
+  let prevUpper = 0;
+  let prevLower = 0;
+  let prevFinalLower = 0;
+  let prevFinalUpper = 0;
+  let finalUpper = 0;
+  let finalLower = 0;
+  let final = 0;
+  for (let i = 0; i < atr.length; i++) {
+    const c = candles[i + 1];
+    const mid = (c.high + c.low) / 2;
+    const upper = mid + multiplier * atr[i];
+    const lower = mid - multiplier * atr[i];
+    finalUpper = upper < prevUpper || c.close > prevUpper ? upper : prevUpper;
+    finalLower = lower > prevLower || c.close < prevLower ? lower : prevLower;
+    if (i === 0) {
+      upTrend = true;
+    } else if (!upTrend) {
+      // Était baissier → redevient haussier si le close casse la bande sup PRÉCÉDENTE
+      upTrend = c.close > prevFinalUpper;
+    } else {
+      // Était haussier → devient baissier si le close casse la bande inf PRÉCÉDENTE
+      upTrend = c.close >= prevFinalLower;
+    }
+    final = upTrend ? finalLower : finalUpper;
+    prevUpper = finalUpper;
+    prevLower = finalLower;
+    prevFinalUpper = finalUpper;
+    prevFinalLower = finalLower;
+  }
+  return { trend: upTrend ? 1 : -1, price: final };
+}
+
+/**
  * Nombre de bins de chaque côté en fonction de la volatilité journalière.
  * Vol élevée → range large (survit aux mouvements), vol faible → range serré (plus de frais).
  */

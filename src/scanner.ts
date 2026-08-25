@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchNewestPools, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, DEFAULT_STRATEGY } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, rsi, DEFAULT_STRATEGY } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -324,6 +324,29 @@ export async function runScan(): Promise<ScanResult> {
         );
       const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
       const drawdown = drawdownFromHigh(candles, p.current_price);
+      // Indicateur de momentum (LP Army academy 2026-08-25, Evil Panda/LogicalTA) :
+      // RSI calculé sur les MÊMES bougies OHLCV déjà fetchées (0 requête API).
+      // Signal INFO uniquement — croiser avec le reste, JAMAIS un exit autonome
+      // (leçon Bollinger 2026-08-18 : un indicateur seul qui déclenche une
+      // sortie ferme des positions à perte).
+      // ⚠️ Supertrend NON émis (2026-08-25, testé sur données réelles) : sur 10
+      // bougies DAILY de meme coins, l'ATR est dominé par les ranges énormes →
+      // à mult 3 le trend est haussier en PERMANENCE (XST -61% sur 10j restait
+      // 🟢), à mult 1 il devient whippy et contredit le prix (LOOKSMAX +36%
+      // baissier). La fonction supertrend() reste dispo dans strategies.ts pour
+      // une future source intraday (marks accel-monitor) — ne pas ré-émettre le
+      // badge sur l'OHLCV daily actuel.
+      const rsiVal = rsi(candles);
+      if (rsiVal !== null) {
+        if (rsiVal <= 30)
+          signals.push(
+            `📉 RSI ${rsiVal.toFixed(0)} (7, bougies daily) : zone de survente — momentum vendeur qui s'essouffle, pas un signal d'achat seul (LP Army)`
+          );
+        else if (rsiVal >= 70)
+          signals.push(
+            `📈 RSI ${rsiVal.toFixed(0)} (7, bougies daily) : euphorie/surachat — attention au pic, pas un signal de vente seul (LP Army)`
+          );
+      }
       // Filtres bidask-dip (playbook Tiagogo) :
       // D — volume min : l'échelle anti-dump compte sur les frais dynamiques
       // des gros volumes ("volume 24h > 1-2M minimum"). Pool à petit volume =
@@ -341,6 +364,19 @@ export async function runScan(): Promise<ScanResult> {
         rejected.push({
           pool: p,
           reason: `pas de rebond : drawdown ${(drawdown * 100).toFixed(0)}% < ${(config.minDipDrawdown * 100).toFixed(0)}% (bidask-dip)`,
+        });
+        continue;
+      }
+      // F — veto RSI (LP Army academy 2026-08-25) : un RSI(7, daily) ≥ seuil
+      // APRÈS un dump ≥ 30% = blow-off top (pump verticale qui ne s'est pas
+      // encore dégonflée) — la pire configuration pour déployer une échelle
+      // anti-dump. Le badge INFO ne suffisait pas : veto d'entrée réel.
+      // (topblast/resurrect NON concernés : le momentum élevé est leur porte
+      // d'entrée par construction.)
+      if (strategy === "bidask-dip" && rsiVal !== null && rsiVal >= config.rsiMaxEntryBidask) {
+        rejected.push({
+          pool: p,
+          reason: `RSI ${rsiVal.toFixed(0)} ≥ ${config.rsiMaxEntryBidask} (surachat) — blow-off top, pas d'échelle (bidask-dip)`,
         });
         continue;
       }

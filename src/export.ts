@@ -98,7 +98,10 @@ export async function exportData(): Promise<string> {
       id: p.id,
       opened_at: p.opened_at,
       pool_address: p.pool_address,
-      name: p.name,
+      // ⚠️ displayName aussi ici (fix 2026-08-25) : la position réelle
+      // CYBERLEEK s'affichait « -SOL » — le fallback n'était appliqué qu'aux
+      // opportunités, pas aux positions réelles.
+      name: displayName(p.name, p.token_x_symbol, p.token_y_symbol),
       strategy: p.strategy,
       deposit_usd: p.deposit_usd,
       value_usd: p.last_value_usd,
@@ -195,7 +198,7 @@ export async function exportData(): Promise<string> {
   // Ajouté 2026-08-23 (demande David).
   const realRows = (db
     .prepare(
-      `SELECT rp.id, rp.name, rp.strategy, rp.pool_address, rp.deposit_usd, rp.amount_y,
+      `SELECT rp.id, rp.name, rp.token_x_symbol, rp.token_y_symbol, rp.strategy, rp.pool_address, rp.deposit_usd, rp.amount_y,
               rp.min_bin_id, rp.max_bin_id, rp.position_pubkey, rp.opened_at,
               rm.value_usd, rm.net_pnl_usd, rm.in_range, rm.taken_at
        FROM real_positions rp
@@ -209,7 +212,9 @@ export async function exportData(): Promise<string> {
     ? {
         positions: realRows.map((p) => ({
           id: p.id,
-          name: p.name,
+          // displayName (fix 2026-08-25) : la position CYBERLEEK s'affichait
+          // « -SOL » — fallback token_x-token_y quand l'API renvoie un nom vide.
+          name: displayName(p.name, p.token_x_symbol, p.token_y_symbol),
           strategy: p.strategy,
           pool_address: p.pool_address,
           deposit_usd: p.deposit_usd,
