@@ -18,6 +18,11 @@ const { getAllLbPairPositionsByUser } = require("@meteora-ag/dlmm") as Record<st
 const DATA_API = "https://dlmm.datapi.meteora.ag";
 const ALERT_COOLDOWN_MS = 12 * 3_600_000; // 1 alerte max / type / position / 12 h
 const CLAIM_COOLDOWN_MS = 24 * 3_600_000;
+// Retente 1×/h max en cas d'échec — sans ça, un claim qui échoue (bug ou
+// réseau) spamme Telegram 🚨 à CHAQUE run 1 min (leçon 2026-08-26 : 240+
+// alertes en ~4 h sur le bug transaction.sign). Le cooldown de succès
+// (CLAIM_COOLDOWN_MS) ne couvrait que le type "real-claim", pas les échecs.
+const CLAIM_FAIL_COOLDOWN_MS = 1 * 3_600_000;
 
 db.exec(`CREATE TABLE IF NOT EXISTS real_marks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -379,7 +384,11 @@ export async function realMonitor(): Promise<number> {
     //    (mandataire : le système bouge de l'argent — même classe que le sweep).
     //    Cooldown 24 h (CLAIM_COOLDOWN_MS).
     if (feesUsd >= config.minClaimUsd && config.claimAutoEnabled) {
-      if (Date.now() - lastAlertAt(pos.id, "real-claim") > CLAIM_COOLDOWN_MS) {
+      // Cooldowns séparés succès (24 h) / échec (1 h) — un échec ne doit pas
+      // être retenté à chaque run (spam Telegram 🚨, leçon 2026-08-26).
+      const lastOk = lastAlertAt(pos.id, "real-claim");
+      const lastFail = lastAlertAt(pos.id, "real-claim-fail");
+      if (Date.now() - lastOk > CLAIM_COOLDOWN_MS && Date.now() - lastFail > CLAIM_FAIL_COOLDOWN_MS) {
         try {
           const sig = await realClaimRewards(String(pos.pool_address), String(pos.position_pubkey));
           if (!sig) throw new Error("sig vide — rien claimé");

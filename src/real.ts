@@ -271,15 +271,24 @@ export async function realClaimRewards(poolAddress: string, positionPubkey: stri
   // ⚠️ Le SDK destructure `{owner, position}` — passer `user` laissait `owner`
   // undefined → `payer.toBuffer()` dans compileToV0Message (simulation CU) → TypeError.
   // Fix 2026-08-25 (claim AUTO XST-SOL échoué à 17:15, fees 25.10$ restées on-chain).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tx = await (pool as any).claimAllRewardsByPosition({ owner: (user as any).publicKey, position: pos });
-  try {
-    const ix = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 });
-    if (tx?.instructions?.unshift) tx.instructions.unshift(ix);
-  } catch {
-    /* non bloquant */
+  // ⚠️ claimAllRewardsByPosition retourne Transaction[] (1+ tx, comme
+  // removeLiquidity) — envoyer CHAQUE tx dans l'ordre, la dernière sig est
+  // le résultat. Envoyer le tableau tel quel → sendAndConfirmTransaction
+  // crashe « transaction.sign is not a function » (bug réel 2026-08-26
+  // 13:48 : claim AUTO CVXV666/GTA6 échoué ~4 h, fees 102$/29$ restées
+  // on-chain, 240+ alertes 🚨). Même pattern que realClosePosition.
+  const txs = (await (pool as any).claimAllRewardsByPosition({ owner: (user as any).publicKey, position: pos })) as unknown[];
+  let lastSig = "";
+  for (const tx of txs) {
+    try {
+      const ix = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000 });
+      if ((tx as any)?.instructions?.unshift) (tx as any).instructions.unshift(ix);
+    } catch {
+      /* non bloquant */
+    }
+    lastSig = await sendWithRetry(sendAndConfirmTransaction, connection, tx, [user]);
   }
-  return await sendWithRetry(sendAndConfirmTransaction, connection, tx, [user]);
+  return lastSig;
 }
 
 /** Récupère les positions réelles d'un wallet sur un pool (lecture seule). */
