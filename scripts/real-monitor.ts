@@ -13,7 +13,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { Keypair, Connection, PublicKey } = require("@solana/web3.js") as Record<string, any>;
-const { create: createPool } = require("@meteora-ag/dlmm") as Record<string, any>;
+const { getAllLbPairPositionsByUser } = require("@meteora-ag/dlmm") as Record<string, any>;
 
 const DATA_API = "https://dlmm.datapi.meteora.ag";
 const ALERT_COOLDOWN_MS = 12 * 3_600_000; // 1 alerte max / type / position / 12 h
@@ -138,6 +138,35 @@ export async function realMonitor(): Promise<number> {
   const connection = new Connection(config.rpcUrl, "confirmed");
   let alerts = 0;
 
+  // ⚠️ LECTURE BATCHÉE (fix anti-429 2026-08-26) : getAllLbPairPositionsByUser
+  // fait ~3-4 RPC pour TOUTES les positions (1 getProgramAccounts owner-wide +
+  // 2 getMultipleAccounts : clock+binArrays+lbPairs puis réserves+mints) au
+  // lieu de ~4 RPC PAR position (createPool + getPositionsByUserAndLbPair =
+  // getActiveBin + getProgramAccounts + getMultipleAccounts) → ~32-40 RPC/run
+  // à 8 positions, ce qui saturait le tier Helius (429, vérifié 26/08 : 58 521
+  // credits RPC = 98,7 % du breakdown). Montants IDENTIQUES (validé 26/08 :
+  // totalXAmount/totalYAmount/feeX/feeY égaux sur 8/8 positions).
+  let positionsByKey = new Map<string, { positionData: any; lbPair: any }>();
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const all = await getAllLbPairPositionsByUser(connection, user.publicKey, { cluster: config.cluster });
+      for (const info of all.values()) {
+        for (const p of info.lbPairPositionsData) {
+          positionsByKey.set(p.publicKey.toBase58(), { positionData: p.positionData, lbPair: info.lbPair });
+        }
+      }
+      break;
+    } catch (e) {
+      if (attempt === 1) {
+        console.warn(`[real-monitor] lecture batchée (transitoire, retentera) : ${String(e).slice(0, 120)}`);
+        await new Promise((r) => setTimeout(r, 2000));
+      } else {
+        console.warn(`[real-monitor] lecture batchée KO — skip run : ${String(e).slice(0, 120)}`);
+        return 0;
+      }
+    }
+  }
+
   for (const pos of rows) {
     // Prix courant — échelle Data API (identique à entry_price stocké)
     const poolRes = await fetch(`${DATA_API}/pools/${pos.pool_address}`, {
@@ -151,41 +180,16 @@ export async function realMonitor(): Promise<number> {
     const price = Number(pool.current_price);
     if (!price) continue;
 
-    // Position on-chain (montants + fees claimables) — avec retry (1) et
-    // double vérification : une erreur RÉSEAU n'est PAS une position disparue.
-    let pd: Record<string, any> | null = null;
-    let dlmm: any = null; // hoisté — l'activeBin sert au calcul d'in_range (bonne échelle)
-    let readError = "";
-    let notFound = false;
-    for (let attempt = 1; attempt <= 2 && !readError; attempt++) {
-      try {
-        dlmm = await createPool(connection, new PublicKey(pos.pool_address), { cluster: config.cluster });
-        const res = await dlmm.getPositionsByUserAndLbPair(user.publicKey);
-        const found = res.userPositions.find(
-          (p: any) => p.publicKey.toBase58() === pos.position_pubkey
-        );
-        if (found) {
-          pd = found.positionData;
-          break;
-        }
-        notFound = true;
-        break;
-      } catch (e) {
-        readError = String(e);
-        if (attempt === 1) await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-    if (readError) {
-      console.warn(`[real-monitor] lecture SDK ${pos.name} (transitoire, retentera) : ${readError.slice(0, 120)}`);
-      continue;
-    }
-    if (notFound) {
-      // Vérification indépendante AVANT d'alerter : le compte existe-t-il ?
+    // Position on-chain : lookup dans le batch owner-wide (0 RPC). Gardes
+    // conservées : une position absente du batch → vérification getAccountInfo
+    // indépendante AVANT d'alerter (une erreur RÉSEAU n'est pas une disparition).
+    const hit = positionsByKey.get(pos.position_pubkey);
+    if (!hit) {
       const acc = await connection
         .getAccountInfo(new PublicKey(pos.position_pubkey))
         .catch(() => null);
       if (acc) {
-        console.warn(`[real-monitor] ${pos.name} : absent du filtre SDK mais compte présent on-chain — faux positif RPC, skip`);
+        console.warn(`[real-monitor] ${pos.name} : absent du batch mais compte présent on-chain — faux positif RPC, skip`);
         continue;
       }
       if (Date.now() - lastAlertAt(pos.id, "real-missing") > ALERT_COOLDOWN_MS) {
@@ -196,7 +200,7 @@ export async function realMonitor(): Promise<number> {
       }
       continue;
     }
-    if (!pd) continue; // non atteignable (readError/notFound continuent) — satisfait le narrowing TS
+    const pd = hit.positionData;
 
     const decX = Number(pool.token_x?.decimals ?? 6);
     const decY = Number(pool.token_y?.decimals ?? 9);
@@ -236,11 +240,15 @@ export async function realMonitor(): Promise<number> {
     if (wsBin && typeof wsBin.active_bin_id === "number") {
       inRange = wsBin.active_bin_id >= pos.min_bin_id && wsBin.active_bin_id <= pos.max_bin_id;
     } else {
-      // Source 2 : activeBin on-chain du SDK (même échelle que min/max_bin_id).
-      try {
-        const activeBin = (await dlmm.getActiveBin()).binId as number;
+      // Source 2 : activeId ON-CHAIN du lbPair du batch (même échelle que
+      // min/max_bin_id, 0 RPC — le batch l'a déjà fetché). Validé 26/08 :
+      // cohérent avec le wsBin sur 8 pools.
+      const activeBin = hit.lbPair?.activeId as number | undefined;
+      if (typeof activeBin === "number") {
         inRange = activeBin >= pos.min_bin_id && activeBin <= pos.max_bin_id;
-      } catch {
+      } else {
+        // Source 3 : conversion par les decimals (per-lamport = per-token ×
+        // 10^(decY−decX)) — dernier recours, 0 RPC.
         const priceLamport = price * 10 ** (decY - decX);
         inRange =
           priceLamport >= binPrice(pos.min_bin_id, pos.bin_step) && priceLamport <= binPrice(pos.max_bin_id, pos.bin_step);
