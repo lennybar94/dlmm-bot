@@ -1,29 +1,15 @@
-// Rapport quotidien : résumé positions, frais, opportunités, événements.
+// Rapport quotidien : résumé positions réelles, frais, opportunités, événements.
+// Régime machine réelle (24/08) : le paper est dormant → plus aucune section
+// paper dans le rapport (tri d'alertes 26/08 — le Telegram ne porte que le réel).
 
 import { db } from "./db.js";
-import { getPortfolioSummary, getOpenPositions } from "./paper.js";
 import { getRules, getRuleChanges } from "./rules.js";
 import { getSolPriceUsd } from "./export.js";
 
 export async function buildDailyReport(): Promise<string> {
-  const s = getPortfolioSummary();
   const lines: string[] = [];
   const now = new Date();
   lines.push(`=== Rapport DLMM ${now.toISOString().slice(0, 16).replace("T", " ") } ===`);
-  lines.push("");
-  lines.push(`Portefeuille paper :`);
-  lines.push(`  Positions ouvertes : ${s.open}`);
-  lines.push(`  Investi : ${s.investedUsd.toFixed(0)}$`);
-  lines.push(`  Valeur : ${s.valueUsd.toFixed(0)}$`);
-  lines.push(`  PnL net (valeur + frais − investi) : ${s.netPnlUsd >= 0 ? "+" : ""}${s.netPnlUsd.toFixed(2)}$`);
-  lines.push(`  Frais encaissés (cumul) : ${(s.feesEarnedUsd + s.feesClaimedUsd).toFixed(2)}$ (dont claims ${s.feesClaimedUsd.toFixed(2)}$)`);
-  lines.push(`  Rebalances : ${s.rebalances}`);
-  // PnL en SOL (benchmark CTT_Dev : 2 SOL → 4.94 SOL en 3 semaines).
-  const solUsd = await getSolPriceUsd();
-  if (solUsd && solUsd > 0) {
-    lines.push(`  PnL net en SOL : ${s.netPnlUsd >= 0 ? "+" : ""}${(s.netPnlUsd / solUsd).toFixed(3)} SOL (prix SOL ${solUsd.toFixed(2)}$)`);
-    lines.push(`  Dépôt total en SOL : ${(s.investedUsd / solUsd).toFixed(2)} SOL → valeur ${(s.valueUsd / solUsd).toFixed(2)} SOL`);
-  }
   lines.push("");
 
   // Statut du bot (fraîcheur de l'activité réelle)
@@ -52,27 +38,16 @@ export async function buildDailyReport(): Promise<string> {
   }
   lines.push("");
 
-  const positions = getOpenPositions();
-  if (positions.length) {
-    lines.push("Positions ouvertes :");
-    for (const p of positions) {
-      const pnl = p.last_value_usd - p.deposit_usd + p.fees_earned_usd + p.fees_claimed_usd;
-      lines.push(
-        `  • ${p.name} [${p.strategy}] ${p.deposit_usd.toFixed(0)}$ → ${p.last_value_usd.toFixed(0)}$ ` +
-          `(pnl ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}$) | frais ${(p.fees_earned_usd + p.fees_claimed_usd).toFixed(2)}$ | ` +
-          `IL ${p.last_il_usd.toFixed(2)}$ | bins [${p.min_bin_id}..${p.max_bin_id}] | rebal ${p.rebalance_count}`
-      );
-    }
-    lines.push("");
-  }
-
-  // Pilote réel : une ligne par position ouverte (tri alertes 22/08 — le
-  // rapport quotidien est LE canal informatif ; Telegram ne porte que le
+  // Pilote réel : une ligne par position ouverte + totaux (tri alertes 22/08 —
+  // le rapport quotidien est LE canal informatif ; Telegram ne porte que le
   // mandataire : auto-close, hard-stop, introuvable, watchdog).
   const realRows = db
     .prepare(`SELECT * FROM real_positions WHERE status='open' ORDER BY id`)
     .all() as Record<string, any>[];
   if (realRows.length) {
+    let totPnl = 0;
+    let totFees = 0;
+    let totSol = 0;
     lines.push("Pilote réel :");
     for (const r of realRows) {
       const mark = db
@@ -83,10 +58,20 @@ export async function buildDailyReport(): Promise<string> {
       const inR = mark ? (mark.in_range ? "in-range" : "hors range") : "?";
       const pnl = mark?.net_pnl_usd ?? 0;
       const fees = mark?.fees_usd ?? 0;
+      totPnl += pnl;
+      totFees += fees;
+      totSol += Number(r.amount_y) || 0;
       lines.push(
         `  • ${r.name} [${r.strategy}] ${Number(r.deposit_usd).toFixed(0)}$ (${Number(r.amount_y).toFixed(2)} SOL) — ${inR} — pnl ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}$ — fees ${fees.toFixed(2)}$`
       );
     }
+    // PnL en SOL (benchmark CTT_Dev : 2 SOL → 4.94 SOL en 3 semaines) — le
+    // pilote réel en unités natives.
+    const solUsd = await getSolPriceUsd();
+    lines.push(
+      `  TOTAL ${realRows.length} positions — ${totSol.toFixed(2)} SOL déployés — pnl ${totPnl >= 0 ? "+" : ""}${totPnl.toFixed(1)}$ — fees ${totFees.toFixed(2)}$` +
+        (solUsd && solUsd > 0 ? ` (pnl ${(totPnl / solUsd).toFixed(3)} SOL, prix ${solUsd.toFixed(2)}$)` : "")
+    );
     lines.push("");
   }
 
