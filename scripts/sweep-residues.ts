@@ -48,10 +48,20 @@ const conn = new Connection(config.rpcUrl, "confirmed");
 const solUsd = (await getSolPriceUsd()) ?? 93;
 const minValueSol = config.residueSwapMinUsd / solUsd;
 
-// 1) Carte mint → {pool, symbol} depuis les closes récentes (48h) : les résidus
-// viennent des positions fermées. Fetch du détail Data API (token_x.address).
+// 1) Carte mint → {pool, symbol} :
+//    - closes récentes (48h) : les résidus de close viennent des positions fermées.
+//    - positions OUVERTES (fix 2026-08-26, leçon GTA6) : un claim AUTO de fees
+//      paie une partie en token_x (selon le sens des swaps) → ces tokens
+//      atterrissent au WALLET alors que la position est toujours ouverte. Sans
+//      cette extension, ils restaient « token inconnu » ignorés à vie (16 154
+//      GTA6 ≈ 15,3$ bloqués après le claim du 26/08 16:07). Sûr : on ne swappe
+//      QUE le solde du wallet (la liquidité vit dans le pool on-chain, jamais
+//      dans le wallet — removeLiquidity est la seule voie de sortie).
+//    Fetch du détail Data API (token_x.address) pour chaque pool.
 const closedPools = (
-  db.prepare(`SELECT DISTINCT pool_address, token_x_symbol FROM real_positions WHERE status='closed' AND closed_at > ?`).all(
+  db.prepare(`SELECT DISTINCT pool_address, token_x_symbol FROM real_positions WHERE status='closed' AND closed_at > ?
+UNION
+SELECT DISTINCT pool_address, token_x_symbol FROM real_positions WHERE status='open'`).all(
     Date.now() - 48 * 3_600_000
   ) as { pool_address: string; token_x_symbol: string | null }[]
 );
@@ -189,10 +199,21 @@ for (const wt of walletTokens) {
     swapped++;
   } catch (e) {
     const errMsg = String(e).slice(0, 160);
-    const msg = `🚨 [${new Date().toLocaleTimeString("fr-FR")}] SWEEP ${entry.symbol} ÉCHOUÉ : ${errMsg} — swap manuel possible (sell:omo pattern)`;
-    logEvent("residue-sweep-fail", msg, { poolAddress: entry.pool });
-    const creds = getTelegramCreds();
-    if (creds) await sendTelegram(creds.token, creds.chatId, msg);
+    // Cooldown d'échec (leçon 8ecb484, 26/08) : sans lui, un swap qui échoue
+    // (bug ou réseau) spammait 🚨 Telegram à CHAQUE run */15 — le cooldown de
+    // succès (residue_sweeps.last_swap_at) ne couvre que les runs gagnants.
+    const lastFail =
+      (db
+        .prepare(`SELECT MAX(created_at) AS at FROM events WHERE type='residue-sweep-fail' AND pool_address=?`)
+        .get(entry.pool) as { at: number | null } | undefined)?.at ?? 0;
+    if (Date.now() / 1000 - lastFail > config.residueSwapCooldownMin * 60) {
+      const msg = `🚨 [${new Date().toLocaleTimeString("fr-FR")}] SWEEP ${entry.symbol} ÉCHOUÉ : ${errMsg} — swap manuel possible (sell:omo pattern)`;
+      logEvent("residue-sweep-fail", msg, { poolAddress: entry.pool });
+      const creds = getTelegramCreds();
+      if (creds) await sendTelegram(creds.token, creds.chatId, msg);
+    } else {
+      log(`  ⏳ ${entry.symbol} échec récent — pas de re-notif (cooldown ${config.residueSwapCooldownMin} min)`);
+    }
     err(`  🚨 ${entry.symbol} échec : ${errMsg}`);
   }
 }
