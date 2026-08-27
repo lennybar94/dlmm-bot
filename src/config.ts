@@ -55,6 +55,13 @@ export const config = {
   depositUsdPerPosition: num("DEPOSIT_USD_PER_POSITION", 1_000),
   rebalanceThreshold: num("REBALANCE_THRESHOLD", 0.45),
   hardStopDailyDrop: num("HARD_STOP_DAILY_DROP", 0.4),
+  // Value stop-loss (garde-fou CYBERLEEK/GTA6, 2026-08-27) : close auto si la
+  // VALEUR de la position tombe sous (1 − seuil) × le SOL déployé à
+  // l'ouverture. Le hard-stop prix (dip 0.85) ne coupe que la mort du token ;
+  // une échelle bidask-dip qui traverse son range perd −30/−50 % de valeur
+  // sans qu'aucune règle ne tire (in-range = pas d'OOR, PnL < 0 = pas de
+  // recovery). Validé David 27/08 : seuil 0.30, pas de trailing en v1.
+  valueStopLoss: num("VALUE_STOP_LOSS", 0.3),
   minClaimUsd: num("MIN_CLAIM_USD", 25),
   // Pilote réel : alerte « position en attente » après X h hors range (aucun
   // fee) — décision laisser dormir / redéployer (kill-switch).

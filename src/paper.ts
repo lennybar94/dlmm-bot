@@ -333,6 +333,15 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
     closePosition(pos.id, "hard-stop", `Chute de ${(dayDrop * 100).toFixed(1)}% depuis le début de journée`);
     return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
   }
+  // Value stop-loss (garde-fou CYBERLEEK/GTA6, miroir réel 2026-08-27) : le
+  // hard-stop prix ne coupe que la mort du token ; une échelle qui traverse
+  // son range perd −30/−50 % sans qu'aucun trigger ne tire. Close si la
+  // VALEUR tombe sous (1 − VALUE_STOP_LOSS) × le dépôt.
+  const lossRatio = pos.deposit_usd > 0 ? (pos.deposit_usd - valueUsd) / pos.deposit_usd : 0;
+  if (lossRatio > config.valueStopLoss) {
+    closePosition(pos.id, "value-stop", `Valeur ${(lossRatio * 100).toFixed(1)}% sous le dépôt (${valueUsd.toFixed(0)}$ vs ${pos.deposit_usd.toFixed(0)}$)`);
+    return { price, value_usd: valueUsd, fees_usd: fees, il_usd: ilUsd, net_pnl_usd: netPnlUsd, in_range: ev.inRange };
+  }
   // Flip échoué (playbook satsmonkes, setup 4) : le prix retombe sous le bas de
   // la range de distribution → le re-dump est en cours, la position est tout en
   // token qui se déprécie SANS fees (hors range). On sort avant la casse.

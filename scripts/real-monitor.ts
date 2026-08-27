@@ -317,6 +317,38 @@ export async function realMonitor(): Promise<number> {
       continue;
     }
 
+    // 1.5) Value stop-loss (garde-fou CYBERLEEK/GTA6, 2026-08-27) : le
+    //      hard-stop prix (dip 0.85) ne coupe que la mort du token ; une
+    //      échelle bidask-dip qui traverse son range perd −30/−50 % de
+    //      valeur SANS qu'aucune règle ne tire (in-range = pas d'OOR,
+    //      PnL < 0 = pas de recovery). Stop sur la VALEUR (hors fees —
+    //      conservateur : les fees claimables sont récupérées au close)
+    //      vs le SOL réellement déployé à l'ouverture (refSol — PAS
+    //      deposit_usd, écart ~6 % du sizing satsmonkes). AUTO via le
+    //      même kill-switch ; cooldown d'échec 1 h dans autoClose.
+    //      Validé David 27/08 : seuil 0.30, pas de trailing en v1.
+    const lossRatio = refSol > 0 ? (refSol - valueSol) / refSol : 0;
+    if (lossRatio > config.valueStopLoss) {
+      if (config.realExitAuto) {
+        const m = await autoClose(
+          pos,
+          "value-stop",
+          `valeur ${(lossRatio * 100).toFixed(1)}% sous le déployé (${valueUsd.toFixed(0)}$ vs ${(refSol * solUsd).toFixed(0)}$)`,
+          netPnlUsd,
+          valueUsd,
+          creds
+        );
+        if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
+        alerts++;
+      } else if (Date.now() - lastAlertAt(pos.id, "real-value-stop") > ALERT_COOLDOWN_MS) {
+        const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : VALUE-STOP — valeur ${(lossRatio * 100).toFixed(1)}% sous le déployé (${valueUsd.toFixed(0)}$) — fermer : ${killCmd}`;
+        logEvent("real-value-stop", msg, pos.id, pos.pool_address);
+        if (creds) await sendTelegram(creds.token, creds.chatId, msg);
+        alerts++;
+      }
+      continue;
+    }
+
     // 2) Recovery-exit (dip/flip — playbook Djedje20x) : PnL net ≥ 0 au rebond,
     //    fees incluses, condition « était sous l'eau au mark précédent ».
     // Garde « surtension » (gud, 2026-08-24) : pas de recovery-exit pendant
