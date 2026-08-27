@@ -71,17 +71,57 @@ async function decimalsFor(
 }
 
 // Retry sur envoi de transaction (congestion Solana) : 3 essais, 2 s d'écart.
+/**
+ * Confirme une tx par POLLING getSignatureStatus — HTTP pur, AUCUN websocket.
+ * ⚠️ Incident 2026-08-27 14:35 : sendAndConfirmTransaction confirme via
+ * signatureSubscribe (ws interne web3.js) ; quand le tier ws Helius renvoie
+ * 429 (saturation — 2 ws-pool-monitor en double), la souscription ne
+ * s'établit jamais → la confirmation pend → le run real-monitor se BLOQUE
+ * (flock pris, surveillance arrêtée 25 min, watchdog 15:00). Les txs
+ * passaient quand même on-chain (claim Zoe 12:36 + sweep 12:45 finalisés
+ * malgré TransactionExpired…) — le ws ne fait que casser la CONFIRMATION.
+ * Le polling est HTTP pur : plus aucune dépendance au ws pour le filet de
+ * sécurité (open/close/claim).
+ */
+async function pollConfirmed(
+  conn: any,
+  sig: string,
+  timeoutMs: number
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last: any = null;
+  while (Date.now() < deadline) {
+    const st = await conn.getSignatureStatus(sig).catch(() => null);
+    const v = st?.value;
+    if (v) {
+      last = v;
+      if (v.err) throw new Error(`tx ${sig.slice(0, 12)}… rejetée on-chain : ${JSON.stringify(v.err)}`);
+      if (v.confirmationStatus && v.confirmationStatus !== "processed") return;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  throw new Error(
+    `confirmation timeout ${Math.round(timeoutMs / 1000)}s (sig ${sig.slice(0, 12)}… — dernier statut ${last ? last.confirmationStatus : "inconnu"})`
+  );
+}
+
 async function sendWithRetry(
-  send: SdkBundle["sendAndConfirmTransaction"],
+  _send: SdkBundle["sendAndConfirmTransaction"],
   connection: unknown,
   tx: unknown,
   signers: unknown[],
   attempts = 3
 ): Promise<string> {
+  const conn = connection as any;
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await send(connection, tx, signers);
+      // Envoi IDENTIQUE à sendAndConfirmTransaction (ligne 2273) : HTTP pur,
+      // signature gérée par sendTransaction — seule la CONFIRMATION change
+      // (polling au lieu de la souscription ws).
+      const sig: string = await conn.sendTransaction(tx, signers);
+      await pollConfirmed(conn, sig, 60_000);
+      return sig;
     } catch (e) {
       lastErr = e;
       if (i < attempts - 1) await new Promise((r) => setTimeout(r, 2000));
