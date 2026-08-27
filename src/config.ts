@@ -60,8 +60,12 @@ export const config = {
   // l'ouverture. Le hard-stop prix (dip 0.85) ne coupe que la mort du token ;
   // une échelle bidask-dip qui traverse son range perd −30/−50 % de valeur
   // sans qu'aucune règle ne tire (in-range = pas d'OOR, PnL < 0 = pas de
-  // recovery). Validé David 27/08 : seuil 0.30, pas de trailing en v1.
-  valueStopLoss: num("VALUE_STOP_LOSS", 0.3),
+  // recovery). RESERRÉ 0.30 → 0.15 le 27/08 soir (doctrine David : « gagner
+  // plus petit et souvent, pas de grosses pertes ») — rejeu des ~13 000 marks
+  // réels : aucune position saine n'est passée sous −2.6 %, les pertes sont
+  // binaires (flat puis dump final en quelques marks) → zéro faux positif à
+  // 0.15, perte max ~75 $ par position de 500 $. Pas de trailing en v1.
+  valueStopLoss: num("VALUE_STOP_LOSS", 0.15),
   minClaimUsd: num("MIN_CLAIM_USD", 25),
   // Pilote réel : alerte « position en attente » après X h hors range (aucun
   // fee) — décision laisser dormir / redéployer (kill-switch).

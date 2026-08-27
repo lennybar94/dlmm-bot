@@ -1,6 +1,30 @@
 # Garde-fou value stop-loss −30 % (leçons CYBERLEEK & GTA6)
 
-Statut : RÉSOLU (implémenté + validé David 27/08/2026).
+Statut : RÉSOLU (implémenté + validé David 27/08/2026). RESSERRÉ 0.30 → 0.15
+le 27/08 soir (doctrine David : « gagner plus petit et souvent, pas de
+grosses pertes ») — cf. section « Resserrement » en bas.
+
+## Resserrement 27/08 soir (0.30 → 0.15)
+
+Pertes réelles 26/08 18:00 → 27/08 12:59 : CVXV666 −333 $, GTA6 −246 $,
+CYBERLEEK −182 $ (PnL net −680 $ sur 11 closes). Le value-stop −30 % (déjà en
+place) aurait borné GTA6/CYBERLEEK à ~−122/−62 $, mais David veut plus petit.
+
+Rejeu des ~13 000 marks réels (37 positions, min/max de lossRatio par
+position) : AUCUNE position saine n'est passée sous −2,6 % — les pertes sont
+binaires (la position reste ~flat pendant des heures puis le dump final
+traverse la range en quelques marks). Conséquence : un seuil à 0.15 a ZÉRO
+faux positif sur tout l'historique, et les 3 pertes auraient été coupées à
+~−15 % (50-75 $) au lieu de −50/-66 %.
+
+- .env + config.ts : VALUE_STOP_LOSS=0.15 (commit 27/08 soir).
+- Aucune position ouverte coupée au moment du changement (toutes à ~0 %).
+- Marge vs bruit de mark : ×5,7 (bruit max observé −2,6 %).
+- Trade-off documenté : sur un marché BAISSIER non observé, une échelle qui
+  descend légitimement de 15 % avant un rebond serait coupée (perte réalisée
+  ~75 $ au lieu d'un retour à +1 %) — c'est le prix du filet ; seuil ajustable
+  (0.10 = très agressif, 0.20 = plus de place au rebond).
+- Le hard-stop prix (dip 0.85) reste le dernier filet, JAMAIS touché.
 
 ## Le problème (pertes réelles, fermées manuellement 27/08 10:59 UTC)
 
