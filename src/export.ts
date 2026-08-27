@@ -208,47 +208,85 @@ export async function exportData(): Promise<string> {
        ORDER BY rp.id`
     )
     .all() as Record<string, unknown>[]);
-  const real = realRows.length
-    ? {
-        positions: realRows.map((p) => {
-          // Flux temps réel (ws-pool-monitor, 2026-08-25) : activité 60 min
-          // + dernier bin connu + fraîcheur — phase 1 INFO, aucun exit branché.
-          const rt = db
-            .prepare(
-              `SELECT COUNT(*) n, MAX(active_bin_id) bin, MAX(ts) last FROM pool_events_rt WHERE pool_address = ? AND ts > ?`
-            )
-            .get(p.pool_address, now - 3_600_000) as { n: number; bin: number | null; last: number | null };
-          return {
-            id: p.id,
-            // displayName (fix 2026-08-25) : la position CYBERLEEK s'affichait
-            // « -SOL » — fallback token_x-token_y quand l'API renvoie un nom vide.
-            name: displayName(p.name, p.token_x_symbol, p.token_y_symbol),
-            strategy: p.strategy,
-            pool_address: p.pool_address,
-            deposit_usd: p.deposit_usd,
-            amount_y_sol: p.amount_y,
-            min_bin_id: p.min_bin_id,
-            max_bin_id: p.max_bin_id,
-            position_pubkey: p.position_pubkey,
-            opened_at: p.opened_at,
-            value_usd: p.value_usd ?? null,
-            net_pnl_usd: p.net_pnl_usd ?? null,
-            in_range: p.in_range ?? null,
-            mark_taken_at: p.taken_at ?? null,
-            rt_events_60m: rt.n ?? 0,
-            rt_bin: rt.bin ?? null,
-            rt_last_event_ms: rt.last ?? null,
-          };
-        }),
-        summary: {
-          open: realRows.length,
-          investedUsd: realRows.reduce((a, p) => a + Number(p.deposit_usd ?? 0), 0),
-          valueUsd: realRows.reduce((a, p) => a + Number(p.value_usd ?? 0), 0),
-          netPnlUsd: realRows.reduce((a, p) => a + Number(p.net_pnl_usd ?? 0), 0),
-          deployedSol: realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0),
-        },
-      }
-    : null;
+  // PnL + fees DEPUIS LE DÉBUT (demande David 27/08) : toutes les positions
+  // (ouvertes + fermées), réalisé + latent. net du dernier mark (inclut les
+  // fees) ; fallback last_value − deposit pour les positions sans mark (ex.
+  // kill-switch test STONK). Fees = en attente (dernier mark) + claims AUTO
+  // (montant parsé du message, format stable « claim AUTO 30.67$ de fees »).
+  const allTimeRows = db
+    .prepare(
+      `SELECT rp.id, rp.status, rp.deposit_usd, rp.last_value_usd,
+              rm.net_pnl_usd, rm.fees_usd
+       FROM real_positions rp
+       LEFT JOIN real_marks rm ON rm.id = (
+         SELECT id FROM real_marks WHERE position_id = rp.id ORDER BY id DESC LIMIT 1)`
+    )
+    .all() as Record<string, unknown>[];
+  let pnlAll = 0;
+  let pnlRealized = 0;
+  let feesPending = 0;
+  for (const r of allTimeRows) {
+    const net =
+      r.net_pnl_usd != null
+        ? Number(r.net_pnl_usd)
+        : (Number(r.last_value_usd ?? 0) - Number(r.deposit_usd ?? 0));
+    pnlAll += net;
+    if (r.status === "closed") pnlRealized += net;
+    feesPending += Number(r.fees_usd ?? 0);
+  }
+  let feesClaimed = 0;
+  for (const c of db.prepare(`SELECT message FROM events WHERE type='real-claim'`).all() as {
+    message: string;
+  }[]) {
+    const m = (c.message ?? "").match(/([0-9]+\.[0-9]+)\$/);
+    if (m) feesClaimed += parseFloat(m[1]);
+  }
+  const allTime = {
+    pnlAllTimeUsd: pnlAll,
+    pnlRealizedUsd: pnlRealized,
+    feesAllTimeUsd: feesPending + feesClaimed,
+  };
+
+  const real = {
+    positions: realRows.map((p) => {
+      // Flux temps réel (ws-pool-monitor, 2026-08-25) : activité 60 min
+      // + dernier bin connu + fraîcheur — phase 1 INFO, aucun exit branché.
+      const rt = db
+        .prepare(
+          `SELECT COUNT(*) n, MAX(active_bin_id) bin, MAX(ts) last FROM pool_events_rt WHERE pool_address = ? AND ts > ?`
+        )
+        .get(p.pool_address, now - 3_600_000) as { n: number; bin: number | null; last: number | null };
+      return {
+        id: p.id,
+        // displayName (fix 2026-08-25) : la position CYBERLEEK s'affichait
+        // « -SOL » — fallback token_x-token_y quand l'API renvoie un nom vide.
+        name: displayName(p.name, p.token_x_symbol, p.token_y_symbol),
+        strategy: p.strategy,
+        pool_address: p.pool_address,
+        deposit_usd: p.deposit_usd,
+        amount_y_sol: p.amount_y,
+        min_bin_id: p.min_bin_id,
+        max_bin_id: p.max_bin_id,
+        position_pubkey: p.position_pubkey,
+        opened_at: p.opened_at,
+        value_usd: p.value_usd ?? null,
+        net_pnl_usd: p.net_pnl_usd ?? null,
+        in_range: p.in_range ?? null,
+        mark_taken_at: p.taken_at ?? null,
+        rt_events_60m: rt.n ?? 0,
+        rt_bin: rt.bin ?? null,
+        rt_last_event_ms: rt.last ?? null,
+      };
+    }),
+    summary: {
+      open: realRows.length,
+      investedUsd: realRows.reduce((a, p) => a + Number(p.deposit_usd ?? 0), 0),
+      valueUsd: realRows.reduce((a, p) => a + Number(p.value_usd ?? 0), 0),
+      netPnlUsd: realRows.reduce((a, p) => a + Number(p.net_pnl_usd ?? 0), 0),
+      deployedSol: realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0),
+      ...allTime,
+    },
+  };
 
   const payload = {
     generated_at: now,

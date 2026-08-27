@@ -75,6 +75,7 @@
   .events .t { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .events .ty { font-weight: 700; text-transform: uppercase; font-size: 11px; color: var(--orange); white-space: nowrap; }
   .empty { padding: 24px; color: var(--muted); text-align: center; font-style: italic; }
+  #realSummary .sub-inline { color: var(--muted); font-size: 11px; margin-left: 4px; }
   details.acc { border-bottom: 1px solid var(--line); }
   details.acc:last-child { border-bottom: none; }
   details.acc summary { padding: 12px 16px; cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; display: flex; gap: 10px; align-items: center; }
@@ -238,7 +239,9 @@ function render(d) {
 
   // Pilote réel (section en haut — le seul endroit qui compte pour le suivi)
   const real = d.real;
-  const hasReal = !!(real && real.positions && real.positions.length);
+  // hasReal = le summary existe (toujours en régime réel, même book vide — le
+  // cumul PnL/fees depuis le début reste affiché, fix 27/08).
+  const hasReal = !!(real && real.summary);
   // Badge de mode DYNAMIQUE (fix 24/08) : « Paper only » était statique et
   // trompeur en régime machine réelle (le dashboard affichait 0 partout).
   const modeBadge = $("#modeBadge");
@@ -261,6 +264,10 @@ function render(d) {
       `<span><b>Déployé</b> ${fmt(rs.deployedSol, 2)} SOL (${usd(rs.investedUsd)})</span>`,
       `<span><b>Valeur</b> ${usd(rs.valueUsd)}</span>`,
       `<span><b>PnL net</b> <span class="${sign(rs.netPnlUsd)}">${usd(rs.netPnlUsd)}</span></span>`,
+      // Cumuls depuis le début (demande David 27/08) : réalisé + latent,
+      // toutes positions ; fees = claims + en attente.
+      `<span><b>PnL depuis le début</b> <span class="${sign(rs.pnlAllTimeUsd)}">${usd(rs.pnlAllTimeUsd)}</span><span class="sub-inline"> réalisé ${usd(rs.pnlRealizedUsd)}</span></span>`,
+      `<span><b>Fees depuis le début</b> ${usd(rs.feesAllTimeUsd)}</span>`,
     ].join("");
     $("#realTable tbody").innerHTML = real.positions.map((p) => `
       <tr>
