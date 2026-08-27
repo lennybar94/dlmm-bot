@@ -100,10 +100,10 @@
   <h2>🟠 Pilote réel <span class="count" id="realCount">0</span></h2>
   <div class="body" id="realSummary" style="padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap"></div>
   <details class="acc" id="progAcc">
-    <summary>📈 Progression (PnL | fees) par période</summary>
+    <summary>📈 Progression (PnL | fees | profit) par période</summary>
     <div class="body">
-      <table id="progTable" style="max-width:520px">
-        <thead><tr><th>Période</th><th>PnL</th><th>Fees</th></tr></thead>
+      <table id="progTable" style="max-width:620px">
+        <thead><tr><th>Période</th><th>PnL</th><th>Fees</th><th>Profit</th></tr></thead>
         <tbody></tbody>
       </table>
       <div class="empty" style="display:none" id="progEmpty">Aucun mark — données insuffisantes.</div>
@@ -274,10 +274,12 @@ function render(d) {
       `<span><b>Déployé</b> ${fmt(rs.deployedSol, 2)} SOL (${usd(rs.investedUsd)})</span>`,
       `<span><b>Valeur</b> ${usd(rs.valueUsd)}</span>`,
       `<span><b>PnL net</b> <span class="${sign(rs.netPnlUsd)}">${usd(rs.netPnlUsd)}</span></span>`,
-      // Cumuls depuis le début (demande David 27/08) : réalisé + latent,
-      // toutes positions ; fees = claims + en attente.
-      `<span><b>PnL depuis le début</b> <span class="${sign(rs.pnlAllTimeUsd)}">${usd(rs.pnlAllTimeUsd)}</span><span class="sub-inline"> réalisé ${usd(rs.pnlRealizedUsd)}</span></span>`,
-      `<span><b>Fees depuis le début</b> ${usd(rs.feesAllTimeUsd)}</span>`,
+      // Cumuls depuis le début (demande David 27/08, restructuré 27/08 soir) :
+      // Fees = claims + en attente ; Profit = valeur pure + fees (identité
+      // exacte depuis le fix d3dcda5). « PnL depuis le début » retiré — sa
+      // valeur est dans la colonne PnL de la progression.
+      `<span><b>Fees</b> ${usd(rs.feesAllTimeUsd)}</span>`,
+      `<span><b>Profit</b> <span class="${sign(rs.profitAllTimeUsd)}">${usd(rs.profitAllTimeUsd)}</span></span>`,
     ].join("");
     // Progression par période (demande David 27/08) : 1D, 1W, 1M, 1Y, YTD, ALL
     const prog = rs.progression || {};
@@ -285,7 +287,7 @@ function render(d) {
       .filter((k) => prog[k])
       .map((k) => {
         const p = prog[k];
-        return `<tr><td><strong>${k}</strong></td><td class="${sign(p.pnl)}">${usd(p.pnl)}</td><td>${usd(p.fees)}</td></tr>`;
+        return `<tr><td><strong>${k}</strong></td><td class="${sign(p.pnl)}">${usd(p.pnl)}</td><td>${usd(p.fees)}</td><td class="${sign(p.profit)}">${usd(p.profit)}</td></tr>`;
       })
       .join("");
     if (progRows) {

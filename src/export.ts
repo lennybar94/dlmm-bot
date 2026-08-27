@@ -245,6 +245,9 @@ export async function exportData(): Promise<string> {
     pnlAllTimeUsd: pnlAll,
     pnlRealizedUsd: pnlRealized,
     feesAllTimeUsd: feesPending + feesClaimed,
+    // Profit global (demande David 27/08) : valeur pure + fees — identité
+    // exacte depuis le fix d3dcda5 (net_pnl hors pending).
+    profitAllTimeUsd: pnlAll + feesPending + feesClaimed,
   };
 
   // Progression PnL/fees par période (demande David 27/08 : 1D, 1W, 1M, 1Y,
@@ -313,7 +316,7 @@ export async function exportData(): Promise<string> {
   const eqNowV = equityAt(now);
   const feesNowV = feesAt(now);
   const DAY_MS = 86_400_000;
-  const progression: Record<string, { pnl: number; fees: number }> = {};
+  const progression: Record<string, { pnl: number; fees: number; profit: number }> = {};
   for (const [k, back] of [
     ["1D", 1],
     ["1W", 7],
@@ -321,11 +324,15 @@ export async function exportData(): Promise<string> {
     ["1Y", 365],
   ] as [string, number][]) {
     const t = now - back * DAY_MS;
-    progression[k] = { pnl: eqNowV - equityAt(t), fees: feesNowV - feesAt(t) };
+    const pnl = eqNowV - equityAt(t);
+    const fees = feesNowV - feesAt(t);
+    progression[k] = { pnl, fees, profit: pnl + fees };
   }
   const ytdStart = new Date(new Date().getFullYear(), 0, 1).getTime();
-  progression.YTD = { pnl: eqNowV - equityAt(ytdStart), fees: feesNowV - feesAt(ytdStart) };
-  progression.ALL = { pnl: eqNowV, fees: feesNowV };
+  const ytdPnl = eqNowV - equityAt(ytdStart);
+  const ytdFees = feesNowV - feesAt(ytdStart);
+  progression.YTD = { pnl: ytdPnl, fees: ytdFees, profit: ytdPnl + ytdFees };
+  progression.ALL = { pnl: eqNowV, fees: feesNowV, profit: eqNowV + feesNowV };
 
   const real = {
     positions: realRows.map((p) => {
