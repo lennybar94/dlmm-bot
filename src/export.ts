@@ -215,7 +215,7 @@ export async function exportData(): Promise<string> {
   // (montant parsé du message, format stable « claim AUTO 30.67$ de fees »).
   const allTimeRows = db
     .prepare(
-      `SELECT rp.id, rp.status, rp.deposit_usd, rp.last_value_usd,
+      `SELECT rp.id, rp.status, rp.deposit_usd, rp.last_value_usd, rp.closed_at,
               rm.net_pnl_usd, rm.fees_usd
        FROM real_positions rp
        LEFT JOIN real_marks rm ON rm.id = (
@@ -246,6 +246,81 @@ export async function exportData(): Promise<string> {
     pnlRealizedUsd: pnlRealized,
     feesAllTimeUsd: feesPending + feesClaimed,
   };
+
+  // Progression PnL/fees par période (demande David 27/08 : 1D, 1W, 1M, 1Y,
+  // YTD, ALL). Équité cumulée à t = Σ du dernier mark ≤ t par position
+  // (fallback last_value−deposit au closed_at pour les positions sans mark,
+  // ex. STONK) ; fees cumulées à t = Σ fees du dernier mark ≤ t + claims ≤ t.
+  // Période = cumul(now) − cumul(t).
+  const marksAll = db
+    .prepare(
+      `SELECT position_id, taken_at, net_pnl_usd, fees_usd FROM real_marks ORDER BY position_id, taken_at`
+    )
+    .all() as { position_id: number; taken_at: number; net_pnl_usd: number; fees_usd: number }[];
+  const marksByPos = new Map<number, { taken_at: number; net_pnl_usd: number; fees_usd: number }[]>();
+  for (const m of marksAll) {
+    let arr = marksByPos.get(m.position_id);
+    if (!arr) {
+      arr = [];
+      marksByPos.set(m.position_id, arr);
+    }
+    arr.push(m);
+  }
+  const claimsAll = db
+    .prepare(`SELECT position_id, created_at, message FROM events WHERE type='real-claim'`)
+    .all() as { position_id: number; created_at: number; message: string }[];
+  const claimAmt = (msg: string) => {
+    const m = (msg ?? "").match(/([0-9]+\.[0-9]+)\$/);
+    return m ? parseFloat(m[1]) : 0;
+  };
+  const equityAt = (t: number) => {
+    let eq = 0;
+    for (const p of allTimeRows) {
+      const serie = marksByPos.get(Number(p.id)) ?? [];
+      let net = 0;
+      for (let i = serie.length - 1; i >= 0; i--) {
+        if (serie[i].taken_at <= t) {
+          net = serie[i].net_pnl_usd;
+          break;
+        }
+      }
+      if (serie.length === 0 && t >= (Number(p.closed_at) || now)) {
+        net = Number(p.last_value_usd ?? 0) - Number(p.deposit_usd ?? 0);
+      }
+      eq += net;
+    }
+    return eq;
+  };
+  const feesAt = (t: number) => {
+    let f = 0;
+    for (const p of allTimeRows) {
+      const serie = marksByPos.get(Number(p.id)) ?? [];
+      for (let i = serie.length - 1; i >= 0; i--) {
+        if (serie[i].taken_at <= t) {
+          f += serie[i].fees_usd;
+          break;
+        }
+      }
+    }
+    for (const c of claimsAll) if (c.created_at <= t) f += claimAmt(c.message);
+    return f;
+  };
+  const eqNowV = equityAt(now);
+  const feesNowV = feesAt(now);
+  const DAY_MS = 86_400_000;
+  const progression: Record<string, { pnl: number; fees: number }> = {};
+  for (const [k, back] of [
+    ["1D", 1],
+    ["1W", 7],
+    ["1M", 30],
+    ["1Y", 365],
+  ] as [string, number][]) {
+    const t = now - back * DAY_MS;
+    progression[k] = { pnl: eqNowV - equityAt(t), fees: feesNowV - feesAt(t) };
+  }
+  const ytdStart = new Date(new Date().getFullYear(), 0, 1).getTime();
+  progression.YTD = { pnl: eqNowV - equityAt(ytdStart), fees: feesNowV - feesAt(ytdStart) };
+  progression.ALL = { pnl: eqNowV, fees: feesNowV };
 
   const real = {
     positions: realRows.map((p) => {
@@ -285,6 +360,7 @@ export async function exportData(): Promise<string> {
       netPnlUsd: realRows.reduce((a, p) => a + Number(p.net_pnl_usd ?? 0), 0),
       deployedSol: realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0),
       ...allTime,
+      progression,
     },
   };
 

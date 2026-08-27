@@ -99,6 +99,16 @@
 <section id="realSection" style="display:none">
   <h2>🟠 Pilote réel <span class="count" id="realCount">0</span></h2>
   <div class="body" id="realSummary" style="padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap"></div>
+  <details class="acc" id="progAcc">
+    <summary>📈 Progression (PnL | fees) par période</summary>
+    <div class="body">
+      <table id="progTable" style="max-width:520px">
+        <thead><tr><th>Période</th><th>PnL</th><th>Fees</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty" style="display:none" id="progEmpty">Aucun mark — données insuffisantes.</div>
+    </div>
+  </details>
   <table id="realTable">
     <thead><tr>
       <th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>SOL déployés</th><th>Valeur</th><th>PnL net</th>
@@ -269,6 +279,21 @@ function render(d) {
       `<span><b>PnL depuis le début</b> <span class="${sign(rs.pnlAllTimeUsd)}">${usd(rs.pnlAllTimeUsd)}</span><span class="sub-inline"> réalisé ${usd(rs.pnlRealizedUsd)}</span></span>`,
       `<span><b>Fees depuis le début</b> ${usd(rs.feesAllTimeUsd)}</span>`,
     ].join("");
+    // Progression par période (demande David 27/08) : 1D, 1W, 1M, 1Y, YTD, ALL
+    const prog = rs.progression || {};
+    const progRows = ["1D", "1W", "1M", "1Y", "YTD", "ALL"]
+      .filter((k) => prog[k])
+      .map((k) => {
+        const p = prog[k];
+        return `<tr><td><strong>${k}</strong></td><td class="${sign(p.pnl)}">${usd(p.pnl)}</td><td>${usd(p.fees)}</td></tr>`;
+      })
+      .join("");
+    if (progRows) {
+      $("#progTable tbody").innerHTML = progRows;
+    } else {
+      $("#progTable").style.display = "none";
+      $("#progEmpty").style.display = "";
+    }
     $("#realTable tbody").innerHTML = real.positions.map((p) => `
       <tr>
         <td><strong>${p.name}</strong></td>
