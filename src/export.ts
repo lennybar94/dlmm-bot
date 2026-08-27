@@ -228,7 +228,7 @@ export async function exportData(): Promise<string> {
   for (const r of allTimeRows) {
     const net =
       r.net_pnl_usd != null
-        ? Number(r.net_pnl_usd)
+        ? Number(r.net_pnl_usd) - Number(r.fees_usd ?? 0) // valeur PURE — net_pnl inclut les fees en attente, les ajouter à feesAllTimeUsd double-compterait (vérifié 27/08)
         : (Number(r.last_value_usd ?? 0) - Number(r.deposit_usd ?? 0));
     pnlAll += net;
     if (r.status === "closed") pnlRealized += net;
@@ -252,6 +252,11 @@ export async function exportData(): Promise<string> {
   // (fallback last_value−deposit au closed_at pour les positions sans mark,
   // ex. STONK) ; fees cumulées à t = Σ fees du dernier mark ≤ t + claims ≤ t.
   // Période = cumul(now) − cumul(t).
+  // ⚠️ PnL = net_pnl_usd − fees_usd du mark (valeur PURE, hors fees en
+  // attente) : net_pnl inclut déjà les fees claimables (real-monitor
+  // netPnlSol = valueSol + feesSol − refSol) — les additionner à la colonne
+  // fees double-compterait la variation du pending (vérifié 27/08 sur la DB :
+  // 1D affichait −144$ au lieu de −301$, ALL −41$ au lieu de −494$).
   const marksAll = db
     .prepare(
       `SELECT position_id, taken_at, net_pnl_usd, fees_usd FROM real_marks ORDER BY position_id, taken_at`
@@ -280,7 +285,7 @@ export async function exportData(): Promise<string> {
       let net = 0;
       for (let i = serie.length - 1; i >= 0; i--) {
         if (serie[i].taken_at <= t) {
-          net = serie[i].net_pnl_usd;
+          net = serie[i].net_pnl_usd - serie[i].fees_usd; // valeur PURE (voir commentaire ci-dessus)
           break;
         }
       }
