@@ -280,6 +280,52 @@ export function rsi(candles: OhlcvCandle[], period = 7): number | null {
 }
 
 /**
+ * Analyse de TENDANCE (L4-A, 2026-08-29 — pivot pur : détenir des actifs en
+ * tendance au lieu de memes mourants). Calculée sur les MÊMES bougies daily
+ * déjà fetchées (0 requête API). Trois signaux du rapport L4-A :
+ *   drift24h  = close d'aujourd'hui vs close de la veille (bougies DAILY)
+ *   rsiRising = RSI(7) actuel > RSI(7) de la veille (momentum qui tourne)
+ *   priceAboveSma = close > SMA(7) des closes
+ * ⚠️ downTrend = les TROIS négatifs ensemble (tendance baissière CONFIRMÉE =
+ * profil de dump mortel −50/−68 %). Volontairement STRICT : un token qui
+ * rebondit après un dump (le playbook bidask-dip) a au moins un signal
+ * positif et ne doit PAS être bloqué — contrainte David 29/08 : ne pas
+ * sacrifier la collecte des fees (les entrées bidask-dip SONT des rebonds).
+ * Retourne des nulls si échantillon insuffisant (pool neuf < ~2 j).
+ */
+export interface TrendAnalysis {
+  drift24h: number | null;
+  rsiNow: number | null;
+  rsiPrev: number | null;
+  rsiRising: boolean;
+  sma7: number | null;
+  priceAboveSma: boolean | null;
+  downTrend: boolean;
+}
+
+export function analyzeTrend(candles: OhlcvCandle[]): TrendAnalysis {
+  const closes = candles.map((c) => c.close).filter((c) => c > 0);
+  const last = closes[closes.length - 1];
+  const drift24h =
+    closes.length >= 3 && closes[closes.length - 2] > 0
+      ? last / closes[closes.length - 2] - 1
+      : null;
+  const rsiNow = rsi(candles);
+  const rsiPrev = candles.length >= 2 ? rsi(candles.slice(0, -1)) : null;
+  const rsiRising = rsiNow !== null && rsiPrev !== null && rsiNow > rsiPrev;
+  const sma7 = closes.length >= 7 ? closes.slice(-7).reduce((a, b) => a + b, 0) / 7 : null;
+  const priceAboveSma = sma7 !== null && sma7 > 0 ? last > sma7 : null;
+  const downTrend =
+    drift24h !== null &&
+    drift24h < 0 &&
+    rsiNow !== null &&
+    rsiPrev !== null &&
+    rsiNow < rsiPrev &&
+    priceAboveSma === false;
+  return { drift24h, rsiNow, rsiPrev, rsiRising, sma7, priceAboveSma, downTrend };
+}
+
+/**
  * Supertrend (ATR, multiplier 3 — réglages Evil Panda/LogicalTA) sur les
  * bougies. Période par défaut 7 : l'OHLCV Data API ne renvoie que 10 bougies
  * DAILY (l'interval est ignoré, vérifié 2026-08-25). Retourne

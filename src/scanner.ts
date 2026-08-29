@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchNewestPools, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, rsi, DEFAULT_STRATEGY } from "./strategies.js";
+import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, rsi, analyzeTrend, DEFAULT_STRATEGY } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -346,6 +346,34 @@ export async function runScan(): Promise<ScanResult> {
           signals.push(
             `📈 RSI ${rsiVal.toFixed(0)} (7, bougies daily) : euphorie/surachat — attention au pic, pas un signal de vente seul (LP Army)`
           );
+      }
+      // L4-A (pivot pur, 2026-08-29) : filtre de TENDANCE. downTrend = les 3
+      // signaux négatifs ensemble (drift 24h < 0 ET RSI(7) en baisse ET prix <
+      // MA7) = tendance baissière CONFIRMÉE, profil de dump mortel (−50/−68 %).
+      // ⚠️ SHADOW par défaut (TREND_FILTER_SHADOW=true) : log seul, AUCUNE
+      // ouverture bloquée → 0 fee perdue (contrainte David 29/08 : la collecte
+      // des fees est le moteur du bot). Le veto (TREND_FILTER_SHADOW=false) ne
+      // s'activera qu'après preuve par rejeu (scripts/trend-replay.ts) que les
+      // pools rejetées avaient un net négatif — et jamais sur topblast/resurrect
+      // (le momentum EST leur porte d'entrée par construction).
+      const trend = analyzeTrend(candles);
+      if (trend.downTrend && config.trendFilterEnabled) {
+        const trendReason = `pas de tendance : drift 24h ${(trend.drift24h! * 100).toFixed(0)}%, RSI ${trend.rsiNow!.toFixed(0)}↘, prix < MA7 (L4-A)`;
+        if (config.trendFilterShadow) {
+          signals.push(`⚠️ shadow L4-A (${trendReason}) — log seul, veto après rejeu fees`);
+        } else if (strategy !== "topblast" && strategy !== "resurrect") {
+          rejected.push({ pool: p, reason: trendReason });
+          continue;
+        }
+      } else if (
+        !trend.downTrend &&
+        trend.drift24h !== null &&
+        trend.drift24h > 0 &&
+        trend.priceAboveSma
+      ) {
+        signals.push(
+          `📈 tendance (L4-A) : drift 24h +${(trend.drift24h * 100).toFixed(0)}%, RSI ${trend.rsiNow?.toFixed(0) ?? "?"}${trend.rsiRising ? "↗" : ""}, prix > MA7`
+        );
       }
       // Filtres bidask-dip (playbook Tiagogo) :
       // D — volume min : l'échelle anti-dump compte sur les frais dynamiques

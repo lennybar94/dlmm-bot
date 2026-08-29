@@ -39,6 +39,9 @@ export const config = {
   realMode: bool("REAL_MODE", false),
   realConfirm: str("REAL_CONFIRM", ""),
   walletPrivateKey: str("WALLET_PRIVATE_KEY", ""),
+  // Adresse PUBLIQUE du wallet du bot (pilote réel HE48Nng…). Sert au solde
+  // libre affiché par le dashboard (getBalance) — jamais de clé ici.
+  walletAddress: str("WALLET_ADDRESS", "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk"),
 
   // Scan / opportunités
   minTvl: num("MIN_TVL", 50_000),
@@ -65,7 +68,12 @@ export const config = {
   // réels : aucune position saine n'est passée sous −2.6 %, les pertes sont
   // binaires (flat puis dump final en quelques marks) → zéro faux positif à
   // 0.15, perte max ~75 $ par position de 500 $. Pas de trailing en v1.
-  valueStopLoss: num("VALUE_STOP_LOSS", 0.15),
+  // RESERRÉ 0.15 → 0.05 le 29/08 (analyse PnL pur : −1 594 $ sur 60 positions,
+  // zéro gagnant pur — le fee-breakeven des recovery-exit fuit ~−11 $/close).
+  // Rejeu 60 pos / ~40 000 marks : à −5 % le net (pur+fees) passe −950 $ →
+  // −441 $ (+509 $), zéro faux positif (bruit max −2.6 %, seuil 2× au-dessus).
+  // −3 % ferait +692 $ mais 2 faux positifs et touche le plancher de bruit.
+  valueStopLoss: num("VALUE_STOP_LOSS", 0.05),
   minClaimUsd: num("MIN_CLAIM_USD", 25),
   // Pilote réel : alerte « position en attente » après X h hors range (aucun
   // fee) — décision laisser dormir / redéployer (kill-switch).
@@ -131,6 +139,16 @@ export const config = {
   // RSI(7, daily) est ≥ ce seuil — un RSI surachat APRÈS un dump ≥ 30% signale
   // un blow-off top (pump verticale), la pire configuration pour une échelle.
   rsiMaxEntryBidask: num("RSI_MAX_ENTRY_BIDASK", 70),
+  // L4-A (pivot pur, 2026-08-29) : filtre de TENDANCE sur le scan — ne pas
+  // ouvrir sur un token en tendance baissière CONFIRMÉE (drift 24h < 0 ET
+  // RSI(7) en baisse ET prix < MA7) = profil de dump mortel (−50/−68 %).
+  // ⚠️ SHADOW par défaut : le filtre LOGGE ses rejets (signal ⚠️ shadow L4-A),
+  // il ne bloque AUCUNE ouverture → 0 fee perdue (contrainte David 29/08 :
+  // la collecte des fees est le moteur du bot, les specs L4 ne doivent pas la
+  // sacrifier). Veto = TREND_FILTER_SHADOW=false, uniquement après preuve par
+  // rejeu que les pools rejetées avaient un net négatif (scripts/trend-replay.ts).
+  trendFilterEnabled: bool("TREND_FILTER_ENABLED", true),
+  trendFilterShadow: bool("TREND_FILTER_SHADOW", true),
   // Diversification : max 1 position par token (les 3× ANSEM-SOL étaient 3 pools
   // du même token — risque corrélé zap-out, contre le playbook 6-7 positions).
   maxPositionsPerToken: num("MAX_POSITIONS_PER_TOKEN", 1),
