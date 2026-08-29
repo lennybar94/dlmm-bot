@@ -314,6 +314,13 @@ const realPositionCols = db
 if (!realPositionCols.some((c) => c.name === "pilot")) {
   db.exec("ALTER TABLE real_positions ADD COLUMN pilot INTEGER DEFAULT 0");
 }
+if (!realPositionCols.some((c) => c.name === "invested_sol")) {
+  // Capital TOTAL engagé (SOL) pour une position — pour le pilote L4-B
+  // balancé, le ref du PnL = achat du token X + dépôt SOL (amount_y seul
+  // sous-estime — le token X est ACHETÉ, pas seulement déposé). NULL pour
+  // les positions du book (ref = amount_y, comportement historique).
+  db.exec("ALTER TABLE real_positions ADD COLUMN invested_sol REAL");
+}
 
 db.exec(`CREATE TABLE IF NOT EXISTS pilot_inventory (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

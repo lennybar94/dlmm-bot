@@ -218,7 +218,12 @@ export async function realMonitor(): Promise<number> {
     // Référence honnête : le SOL réellement déployé à l'ouverture (amount_y).
     // Le deposit_usd stocké (sizing satsmonkes) est dimensionné sur l'estimateur
     // yUsd du pool (≈87-90) alors que le prix SOL réel est ~93 → écart ~6%.
-    const refSol = Number(pos.amount_y) || 0;
+    // ⚠️ Pilote L4-B (2026-08-29) : pour une position BALANCÉE, amount_y ne
+    // couvre que le dépôt SOL — le token X est ACHETÉ (capital sorti du wallet)
+    // → ref = invested_sol (achat + dépôt), sinon le PnL est FAUX (+75 $ sur la
+    // phase 0 HYPE le 29/08). Les positions du book (invested_sol NULL) gardent
+    // le comportement historique.
+    const refSol = Number(pos.pilot ? pos.invested_sol : pos.amount_y) || 0;
     const netPnlSol = valueSol + feesSol - refSol;
     const valueUsd = valueSol * solUsd;
     const feesUsd = feesSol * solUsd;

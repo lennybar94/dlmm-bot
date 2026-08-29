@@ -204,12 +204,13 @@ const posId = Number(
       `INSERT INTO real_positions
        (opened_at, pool_address, name, strategy, deposit_usd, position_pubkey, sig,
         min_bin_id, max_bin_id, bin_step, entry_price, token_x_symbol, token_y_symbol,
-        amount_x, amount_y, status, pilot)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1)`
+        amount_x, amount_y, status, pilot, invested_sol)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?)`
     )
     .run(Date.now(), pick, p.name, "spot-spread", usd, r.positionPubkey, r.sig,
       r.minBinId, r.maxBinId, p.bin_step, r.entryPrice,
-      p.token_x.symbol ?? null, p.token_y.symbol ?? null, r.amountX, r.amountY)
+      p.token_x.symbol ?? null, p.token_y.symbol ?? null, r.amountX, r.amountY,
+      buySol + y0)
     .lastInsertRowid as number)
 );
 db.prepare(
