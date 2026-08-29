@@ -449,7 +449,11 @@ export async function realMonitor(): Promise<number> {
     //    REAL_OOR_FORCE_CLOSE_HOURS avant de libérer (pas de verrouillage de
     //    perte précipité, mais pas de position qui moisit — le sweep + le cron
     //    open:paper réallouent ≤ 1 h). Sans REAL_EXIT_AUTO : alerte info.
-    if (!inRange) {
+    if (!inRange && !pos.pilot) {
+      // ⚠️ Pilote L4-B exclu de l'OOR auto (spec 29/08) : une position
+      // BALANCÉE hors range détient le token (pas un capital mort au même
+      // sens que l'échelle Y-only) — alerte seule + décision humaine ; le
+      // value-stop/hard-stop/recovery restent actifs (filet de perte).
       const oorSince = (
         db
           .prepare(
