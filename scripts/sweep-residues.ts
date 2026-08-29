@@ -10,7 +10,7 @@
 import { Keypair, PublicKey, Connection } from "@solana/web3.js";
 import { createRequire } from "node:module";
 import { config } from "../src/config.js";
-import { db, logEvent } from "../src/db.js";
+import { db, logEvent, isPilotInventoryPending } from "../src/db.js";
 import { getTelegramCreds, sendTelegram } from "../src/telegram.js";
 import { getSolPriceUsd } from "../src/export.js";
 
@@ -156,6 +156,15 @@ for (const wt of walletTokens) {
   if (last && Date.now() - last.last_swap_at < config.residueSwapCooldownMin * 60_000) {
     log(`[sweep] ${entry.symbol} : cooldown actif — skip`);
     skippedCooldown++;
+    continue;
+  }
+  // ⚠️ Garde pilote L4-B (2026-08-29) : un token acheté pour une position
+  // pilote (inventaire EN ATTENTE de dépôt) n'est PAS un résidu à swapper —
+  // le swap le transformerait en SOL et l'ouverture balancée échouerait
+  // (l'inventaire vit au wallet entre l'achat et le dépôt).
+  if (isPilotInventoryPending(wt.mint)) {
+    log(`[sweep] ${entry.symbol} : inventaire pilote EN ATTENTE (L4-B) — skip`);
+    skippedUnknown++;
     continue;
   }
   log(`[sweep] ${entry.symbol} : ${wt.ui.toLocaleString("fr-FR")} tokens ≈ ${valueUsd.toFixed(2)}$ (${valueSol.toFixed(3)} SOL) → swap sur ${entry.pool.slice(0, 8)}…`);

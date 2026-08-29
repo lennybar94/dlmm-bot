@@ -302,3 +302,36 @@ export const RESERVED_QUOTE_TOKENS = new Set(["sol", "wsol", "usdc", "usdt"]);
 export function isBlacklistableToken(tokenKey: string): boolean {
   return !RESERVED_QUOTE_TOKENS.has(tokenKey.toLowerCase());
 }
+
+// --- Migration L4-B (pilote token, 2026-08-29) ---
+// Flag `pilot` sur real_positions : isole les positions du pilote (spot/curve
+// balancés sur tokens établis) des stats du book Y-only. Table pilot_inventory :
+// inventaire token acheté EN ATTENTE de dépôt — le sweep des résidus doit
+// l'exclure (un token acheté pour une position pilote n'est PAS un résidu).
+const realPositionCols = db
+  .prepare("PRAGMA table_info(real_positions)")
+  .all() as { name: string }[];
+if (!realPositionCols.some((c) => c.name === "pilot")) {
+  db.exec("ALTER TABLE real_positions ADD COLUMN pilot INTEGER DEFAULT 0");
+}
+
+db.exec(`CREATE TABLE IF NOT EXISTS pilot_inventory (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mint TEXT NOT NULL,
+  pool_address TEXT NOT NULL,
+  symbol TEXT,
+  amount_raw TEXT NOT NULL,
+  amount_ui REAL,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | deposited | swept | failed
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_pilot_inv_status ON pilot_inventory(status)");
+
+/** Inventaire pilote en attente de dépôt pour ce mint (garde sweep) ? */
+export function isPilotInventoryPending(mint: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM pilot_inventory WHERE mint = ? AND status = 'pending' LIMIT 1")
+    .get(mint) as { 1: number } | undefined;
+  return !!row;
+}

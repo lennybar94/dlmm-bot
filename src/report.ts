@@ -75,6 +75,38 @@ export async function buildDailyReport(): Promise<string> {
     lines.push("");
   }
 
+  // Pilote L4-B (2026-08-29) : positions balancées sur tokens établis —
+  // pur + fees séparés du book (contrainte David : les specs L4 ne doivent
+  // pas être au détriment de la collecte — on mesure les deux côtés).
+  const pilotRows = db
+    .prepare(`SELECT * FROM real_positions WHERE pilot=1 ORDER BY id`)
+    .all() as Record<string, any>[];
+  if (pilotRows.length) {
+    let totPur = 0;
+    let totFees = 0;
+    let totSol = 0;
+    let open = 0;
+    lines.push("Pilote L4-B (tokens établis) :");
+    for (const r of pilotRows) {
+      const mark = db
+        .prepare(`SELECT net_pnl_usd, fees_usd FROM real_marks WHERE position_id=? ORDER BY id DESC LIMIT 1`)
+        .get(r.id) as { net_pnl_usd: number; fees_usd: number } | undefined;
+      const pur = (mark?.net_pnl_usd ?? 0) - (mark?.fees_usd ?? 0);
+      const fees = mark?.fees_usd ?? 0;
+      totPur += pur;
+      totFees += fees;
+      totSol += Number(r.amount_y) || 0;
+      if (r.status === "open") open++;
+      lines.push(
+        `  • ${r.name} [${r.strategy}] ${Number(r.deposit_usd).toFixed(0)}$ (${Number(r.amount_y).toFixed(2)} SOL) — ${r.status === "open" ? "ouverte" : "fermée"} — pur ${pur >= 0 ? "+" : ""}${pur.toFixed(1)}$ — fees ${fees.toFixed(2)}$`
+      );
+    }
+    lines.push(
+      `  TOTAL ${pilotRows.length} pos (${open} ouvertes) — ${totSol.toFixed(2)} SOL — pur ${totPur >= 0 ? "+" : ""}${totPur.toFixed(1)}$ — fees ${totFees.toFixed(2)}$`
+    );
+    lines.push("");
+  }
+
   const topOpps = db
     .prepare(
       `SELECT name, score, fee_apr_24h, tvl, volume_24h FROM pool_scans

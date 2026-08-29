@@ -396,6 +396,39 @@ export async function exportData(): Promise<string> {
     verdict: vsRows.length >= 3 ? (vsAvgLossPct <= -0.3 ? "lache" : "borne") : "pas-de-verdict",
   };
 
+  // --- Pilote L4-B (2026-08-29) : positions balancées (spot/curve) sur tokens
+  // établis en tendance, isolées du book via pilot=1. Pur + fees SÉPARÉS du
+  // book (contrainte David 29/08 : les specs L4 ne doivent pas être au
+  // détriment de la collecte — on mesure les deux côtés indépendamment).
+  const pilotRows = db
+    .prepare(
+      `SELECT rp.id, rp.name, rp.strategy, rp.deposit_usd, rp.amount_y, rp.status,
+              rp.token_x_symbol, rp.token_y_symbol, rm.net_pnl_usd, rm.fees_usd
+       FROM real_positions rp
+       LEFT JOIN real_marks rm ON rm.id = (
+         SELECT id FROM real_marks WHERE position_id = rp.id ORDER BY id DESC LIMIT 1)
+       WHERE rp.pilot = 1
+       ORDER BY rp.id`
+    )
+    .all() as Record<string, unknown>[];
+  const pilot = {
+    count: pilotRows.length,
+    open: pilotRows.filter((r) => r.status === "open").length,
+    deployedSol: pilotRows.reduce((a, r) => a + Number(r.amount_y ?? 0), 0),
+    purUsd: pilotRows.reduce((a, r) => a + (Number(r.net_pnl_usd ?? 0) - Number(r.fees_usd ?? 0)), 0),
+    feesUsd: pilotRows.reduce((a, r) => a + Number(r.fees_usd ?? 0), 0),
+    positions: pilotRows.map((r) => ({
+      id: r.id,
+      name: displayName(String(r.name), String(r.token_x_symbol ?? ""), String(r.token_y_symbol ?? "")),
+      strategy: r.strategy,
+      status: r.status,
+      deposit_usd: r.deposit_usd,
+      amount_y_sol: r.amount_y,
+      net_pnl_usd: r.net_pnl_usd ?? null,
+      fees_usd: r.fees_usd ?? null,
+    })),
+  };
+
   // Début de l'historique réel (1er mark ou 1re position) — permet au
   // dashboard de masquer les périodes 1M/1Y/YTD sans couverture réelle.
   const histRow = db
@@ -447,6 +480,7 @@ export async function exportData(): Promise<string> {
       totalSol,
       guardPct,
       valueStop,
+      pilot,
       realHistoryStartMs: histRow.t ?? null,
       ...allTime,
       progression,
