@@ -3,6 +3,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 import { db } from "./db.js";
 import { config } from "./config.js";
 import { getPortfolioSummary, getOpenPositions } from "./paper.js";
@@ -334,6 +336,76 @@ export async function exportData(): Promise<string> {
   progression.YTD = { pnl: ytdPnl, fees: ytdFees, profit: ytdPnl + ytdFees };
   progression.ALL = { pnl: eqNowV, fees: feesNowV, profit: eqNowV + feesNowV };
 
+  // --- Wallet & garde de solde (live RPC, dégradation silencieuse si down) ---
+  let walletFreeSol: number | null = null;
+  try {
+    const solana = require("@solana/web3.js") as {
+      Connection: new (url: string, c: string) => {
+        getBalance: (k: unknown) => Promise<number>;
+      };
+      PublicKey: new (s: string) => unknown;
+    };
+    const conn = new solana.Connection(config.rpcUrl, "confirmed");
+    walletFreeSol = await Promise.race([
+      conn.getBalance(new solana.PublicKey(config.walletAddress)),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("getBalance timeout")), 8000)),
+    ]).then((b) => b / 1e9);
+  } catch {
+    walletFreeSol = null; // RPC indisponible → le dashboard affiche sans solde libre
+  }
+  const deployedSol = realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0);
+  const totalSol = walletFreeSol !== null ? walletFreeSol + deployedSol : null;
+  const guardPct = totalSol !== null ? deployedSol / (0.8 * totalSol) : null;
+
+  // --- Value-stop 24h (doctrine « gagner petit et souvent », filet −15 %) ---
+  const vsSince = now - 24 * 3600 * 1000;
+  const vsRows = db
+    .prepare(
+      `SELECT name, pool_address, deposit_usd, last_value_usd, entry_price, closed_at
+       FROM real_positions
+       WHERE status='closed' AND close_reason='value-stop' AND closed_at >= ?
+       ORDER BY closed_at`
+    )
+    .all(vsSince) as {
+    name: string;
+    pool_address: string;
+    deposit_usd: number;
+    last_value_usd: number | null;
+    entry_price: number;
+    closed_at: number;
+  }[];
+  const vsAvgLossPct = vsRows.length
+    ? vsRows.reduce((s, p) => s + ((p.last_value_usd ?? 0) - p.deposit_usd) / p.deposit_usd, 0) / vsRows.length
+    : 0;
+  const valueStop = {
+    count: vsRows.length,
+    closes: vsRows.map((p) => {
+      const pnl = (p.last_value_usd ?? 0) - p.deposit_usd;
+      let rebound = false;
+      if (p.entry_price > 0) {
+        const mx = db
+          .prepare("SELECT MAX(current_price) m FROM pool_scans WHERE pool_address=? AND scanned_at>?")
+          .get(p.pool_address, p.closed_at) as { m: number | null } | undefined;
+        rebound = !!(mx && mx.m != null && mx.m > p.entry_price);
+      }
+      return { name: p.name, pnl, pct: p.deposit_usd ? pnl / p.deposit_usd : 0, closedAt: p.closed_at, rebound };
+    }),
+    avgLossPct: vsAvgLossPct,
+    // Verdict du filet (même critère que valuestop-report.cjs) : perte
+    // moyenne ≤ 30 % du dépôt = le filet borne. Échantillon < 3 → pas de verdict.
+    verdict: vsRows.length >= 3 ? (vsAvgLossPct <= -0.3 ? "lache" : "borne") : "pas-de-verdict",
+  };
+
+  // Début de l'historique réel (1er mark ou 1re position) — permet au
+  // dashboard de masquer les périodes 1M/1Y/YTD sans couverture réelle.
+  const histRow = db
+    .prepare(
+      `SELECT MIN(t) t FROM (
+         SELECT MIN(opened_at) t FROM real_positions
+         UNION ALL SELECT MIN(taken_at) FROM real_marks)`
+    )
+    .get() as { t: number | null };
+
   const real = {
     positions: realRows.map((p) => {
       // Flux temps réel (ws-pool-monitor, 2026-08-25) : activité 60 min
@@ -370,7 +442,12 @@ export async function exportData(): Promise<string> {
       investedUsd: realRows.reduce((a, p) => a + Number(p.deposit_usd ?? 0), 0),
       valueUsd: realRows.reduce((a, p) => a + Number(p.value_usd ?? 0), 0),
       netPnlUsd: realRows.reduce((a, p) => a + Number(p.net_pnl_usd ?? 0), 0),
-      deployedSol: realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0),
+      deployedSol,
+      walletFreeSol,
+      totalSol,
+      guardPct,
+      valueStop,
+      realHistoryStartMs: histRow.t ?? null,
       ...allTime,
       progression,
     },

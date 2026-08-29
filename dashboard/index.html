@@ -52,7 +52,8 @@
   .kpi .value { font-size: 24px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .pos { color: var(--green); } .neg { color: var(--red); }
-  section { background: var(--card); border: 1px solid var(--line); margin-bottom: 20px; }
+  .kpi .value.warn { color: var(--amber); }
+  section { background: var(--card); border: 1px solid var(--line); margin-bottom: 20px; overflow-x: auto; }
   section > h2 {
     font-size: 14px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px;
     padding: 12px 16px; border-bottom: 1px solid var(--line);
@@ -98,17 +99,19 @@
 
 <section id="realSection" style="display:none">
   <h2>🟠 Pilote réel <span class="count" id="realCount">0</span></h2>
-  <div class="body" id="realSummary" style="padding:12px 16px;display:flex;gap:24px;flex-wrap:wrap"></div>
-  <details class="acc" id="progAcc">
-    <summary>📈 Progression (PnL | fees | profit) par période</summary>
-    <div class="body">
-      <table id="progTable" style="max-width:620px">
-        <thead><tr><th>Période</th><th>PnL</th><th>Fees</th><th>Profit</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="empty" style="display:none" id="progEmpty">Aucun mark — données insuffisantes.</div>
+  <div class="kpis" id="realKpis"></div>
+  <div id="daySplit" style="padding:14px 16px;border-bottom:1px solid var(--line)"></div>
+  <div class="body" style="padding:6px 16px 14px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;gap:12px;flex-wrap:wrap">
+      <b style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Progression par période — PnL pur | Fees | Profit</b>
+      <span style="font-size:12px;color:var(--muted)" id="progNote"></span>
     </div>
-  </details>
+    <table id="progTable" style="max-width:680px">
+      <thead><tr><th>Période</th><th>PnL pur (trading)</th><th>Fees (liquidité)</th><th>Profit (= PnL + fees)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty" style="display:none" id="progEmpty">Aucun mark — données insuffisantes.</div>
+  </div>
   <table id="realTable">
     <thead><tr>
       <th>Pool</th><th>Stratégie</th><th>Dépôt</th><th>SOL déployés</th><th>Valeur</th><th>PnL net</th>
@@ -160,7 +163,7 @@
   <div class="body" style="padding:12px 16px" id="learning"></div>
 </section>
 
-<footer>DLMM Bot — données DLMM Data API (dlmm.datapi.meteora.ag) · paper trading · pas un conseil financier</footer>
+<footer>DLMM Bot — données DLMM Data API (dlmm.datapi.meteora.ag) · pilote réel (wallet HE48Nng…) · pas un conseil financier</footer>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -270,28 +273,73 @@ function render(d) {
     // dans la section Pilote réel ci-dessus.
     $("#kpis").style.display = "none";
     $("#realCount").textContent = rs.open;
-    $("#realSummary").innerHTML = [
-      `<span><b>Déployé</b> ${fmt(rs.deployedSol, 2)} SOL (${usd(rs.investedUsd)})</span>`,
-      `<span><b>Valeur</b> ${usd(rs.valueUsd)}</span>`,
-      `<span><b>PnL net</b> <span class="${sign(rs.netPnlUsd)}">${usd(rs.netPnlUsd)}</span></span>`,
-      // Cumuls depuis le début (demande David 27/08, restructuré 27/08 soir) :
-      // Fees = claims + en attente ; Profit = valeur pure + fees (identité
-      // exacte depuis le fix d3dcda5). « PnL depuis le début » retiré — sa
-      // valeur est dans la colonne PnL de la progression.
-      `<span><b>Fees</b> ${usd(rs.feesAllTimeUsd)}</span>`,
-      `<span><b>Profit</b> <span class="${sign(rs.profitAllTimeUsd)}">${usd(rs.profitAllTimeUsd)}</span></span>`,
-    ].join("");
-    // Progression par période (demande David 27/08) : 1D, 1W, 1M, 1Y, YTD, ALL
+    // Bande de KPIs « d'un coup d'œil » (réarrangé 28/08) : capital, garde,
+    // PnL pur / Fees / Profit (cumuls + 1D), value-stop 24h.
+    const p1d = (rs.progression || {})["1D"] || { pnl: 0, fees: 0, profit: 0 };
+    const guardCls = rs.guardPct != null ? (rs.guardPct >= 1 ? "neg" : rs.guardPct >= 0.9 ? "warn" : "") : "";
+    const guardTxt = rs.guardPct != null
+      ? Math.round(rs.guardPct * 100) + " % de la garde 80 %" + (rs.guardPct >= 1 ? " — book figé" : "")
+      : "garde indispo";
+    const vs = rs.valueStop || { count: 0, avgLossPct: 0, closes: [] };
+    const vsRebounds = (vs.closes || []).filter((c) => c.rebound).length;
+    // Valorisation MARCHÉ des positions (marks, hors fees en attente) — sert
+    // de rapprochement avec l'UI Jupiter (qui valorise au marché + pending).
+    const marketSol = solPrice ? (rs.valueUsd ?? 0) / solPrice : null;
+    $("#realKpis").innerHTML = [
+      ["Capital total", rs.totalSol != null ? fmt(rs.totalSol, 2) + " SOL" : "—",
+        (rs.totalSol != null && solPrice ? "≈ " + usd(rs.totalSol * solPrice, 0) : (rs.deployedSol != null ? fmt(rs.deployedSol, 2) + " SOL déployés" : ""))
+        + (marketSol != null ? " · positions au marché " + fmt(marketSol, 1) + " SOL" : ""), ""],
+      ["Déployé", fmt(rs.deployedSol, 2) + " SOL",
+        rs.open + " positions · " + guardTxt, guardCls],
+      ["PnL pur (trading)", usd(rs.pnlAllTimeUsd, 0),
+        "1D : " + usd(p1d.pnl, 0), sign(rs.pnlAllTimeUsd)],
+      ["Fees (liquidité)", usd(rs.feesAllTimeUsd, 0),
+        "1D : " + usd(p1d.fees, 0), "pos"],
+      ["Profit", usd(rs.profitAllTimeUsd, 0),
+        "1D : " + usd(p1d.profit, 0), sign(rs.profitAllTimeUsd)],
+      ["Value-stop 24 h", vs.count + " close(s)",
+        "perte moy " + pct(vs.avgLossPct, 1) + " · " + vsRebounds + " rebond" + (vsRebounds > 1 ? "s" : ""), vsRebounds > 0 ? "warn" : ""],
+    ].map(([l, v, sub, cls]) =>
+      `<div class="kpi"><div class="label">${l}</div><div class="value ${cls || ""}">${v}</div><div class="sub">${sub}</div></div>`
+    ).join("");
+    // Décomposition du jour (1D) : PnL pur + fees = profit, jamais double-comptés
+    // (le « PnL net » d'une position inclut déjà les fees en attente).
+    const absPnl = Math.abs(p1d.pnl), absFees = Math.abs(p1d.fees), tot = (absPnl + absFees) || 1;
+    const vsVerdict = vs.verdict === "borne" ? " · filet borne (≤ 30 %)" : vs.verdict === "lache" ? " · ⚠️ filet trop lâche" : " · échantillon < 3 closes";
+    $("#daySplit").innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;gap:12px;flex-wrap:wrap">
+        <b style="font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Décomposition du jour (24 h)</b>
+        <span style="font-size:12px;color:var(--muted)">Profit = PnL pur + fees — le « PnL net » affiché inclut déjà les fees en attente, jamais PnL + fees</span>
+      </div>
+      <div style="display:flex;height:26px;border:1px solid var(--line);overflow:hidden">
+        <div style="width:${(absPnl / tot) * 100}%;background:${p1d.pnl < 0 ? "var(--red)" : "var(--green)"};opacity:.85" title="PnL pur ${usd(p1d.pnl)}"></div>
+        <div style="width:${(absFees / tot) * 100}%;background:var(--green);opacity:.85" title="Fees ${usd(p1d.fees)}"></div>
+      </div>
+      <div style="display:flex;gap:24px;margin-top:6px;font-size:13px;flex-wrap:wrap">
+        <span>PnL pur (trading) : <b class="${sign(p1d.pnl)}">${usd(p1d.pnl)}</b></span>
+        <span>Fees (liquidité) : <b class="pos">${usd(p1d.fees)}</b></span>
+        <span>Profit : <b class="${sign(p1d.profit)}">${usd(p1d.profit)}</b></span>
+        <span style="color:var(--muted)">Value-stop : ${vs.count} close(s) · perte moy ${pct(vs.avgLossPct, 1)}${vsVerdict}</span>
+      </div>`;
+    // Progression par période : seules les périodes couvertes par l'historique
+    // réel sont affichées (1M/1Y/YTD masquées tant que l'historique < période).
     const prog = rs.progression || {};
-    const progRows = ["1D", "1W", "1M", "1Y", "YTD", "ALL"]
-      .filter((k) => prog[k])
+    const histDays = rs.realHistoryStartMs ? (Date.now() - rs.realHistoryStartMs) / 86400000 : 0;
+    const minDays = { "1D": 1, "1W": 7, "1M": 30, "1Y": 365, YTD: 365, ALL: 0 };
+    const allKeys = ["1D", "1W", "1M", "1Y", "YTD", "ALL"];
+    const progRows = allKeys
+      .filter((k) => prog[k] && histDays >= (minDays[k] || 0))
       .map((k) => {
         const p = prog[k];
-        return `<tr><td><strong>${k}</strong></td><td class="${sign(p.pnl)}">${usd(p.pnl)}</td><td>${usd(p.fees)}</td><td class="${sign(p.profit)}">${usd(p.profit)}</td></tr>`;
+        return `<tr><td><strong>${k}</strong></td><td class="${sign(p.pnl)}">${usd(p.pnl)}</td><td class="pos">${usd(p.fees)}</td><td class="${sign(p.profit)}">${usd(p.profit)}</td></tr>`;
       })
       .join("");
+    const hidden = allKeys.filter((k) => prog[k] && !(histDays >= (minDays[k] || 0)));
+    $("#progNote").textContent = hidden.length ? "masquées (historique < période) : " + hidden.join(", ") : "";
     if (progRows) {
       $("#progTable tbody").innerHTML = progRows;
+      $("#progTable").style.display = "";
+      $("#progEmpty").style.display = "none";
     } else {
       $("#progTable").style.display = "none";
       $("#progEmpty").style.display = "";
