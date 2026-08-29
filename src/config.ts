@@ -58,22 +58,18 @@ export const config = {
   depositUsdPerPosition: num("DEPOSIT_USD_PER_POSITION", 1_000),
   rebalanceThreshold: num("REBALANCE_THRESHOLD", 0.45),
   hardStopDailyDrop: num("HARD_STOP_DAILY_DROP", 0.4),
-  // Value stop-loss (garde-fou CYBERLEEK/GTA6, 2026-08-27) : close auto si la
-  // VALEUR de la position tombe sous (1 − seuil) × le SOL déployé à
-  // l'ouverture. Le hard-stop prix (dip 0.85) ne coupe que la mort du token ;
-  // une échelle bidask-dip qui traverse son range perd −30/−50 % de valeur
-  // sans qu'aucune règle ne tire (in-range = pas d'OOR, PnL < 0 = pas de
-  // recovery). RESERRÉ 0.30 → 0.15 le 27/08 soir (doctrine David : « gagner
-  // plus petit et souvent, pas de grosses pertes ») — rejeu des ~13 000 marks
-  // réels : aucune position saine n'est passée sous −2.6 %, les pertes sont
-  // binaires (flat puis dump final en quelques marks) → zéro faux positif à
-  // 0.15, perte max ~75 $ par position de 500 $. Pas de trailing en v1.
-  // RESERRÉ 0.15 → 0.05 le 29/08 (analyse PnL pur : −1 594 $ sur 60 positions,
-  // zéro gagnant pur — le fee-breakeven des recovery-exit fuit ~−11 $/close).
-  // Rejeu 60 pos / ~40 000 marks : à −5 % le net (pur+fees) passe −950 $ →
-  // −441 $ (+509 $), zéro faux positif (bruit max −2.6 %, seuil 2× au-dessus).
-  // −3 % ferait +692 $ mais 2 faux positifs et touche le plancher de bruit.
-  valueStopLoss: num("VALUE_STOP_LOSS", 0.05),
+  // Value stop-loss (garde-fou CYBERLEEK/GTA6, 2026-08-27 ; révisé NET 29/08) :
+  // close auto si la PERTE NETTE (valeur + fees − SOL déployé) dépasse le seuil.
+  // Historique : 0.30 (27/08) → 0.15 (27/08 soir) → 0.05 (29/08) → 0.10 NET
+  // (29/08). Le hard-stop prix (dip 0.85) ne coupe que la mort du token ; une
+  // échelle bidask-dip qui traverse son range perd −30/−50 % sans qu'aucune
+  // règle ne tire (in-range = pas d'OOR, PnL < 0 = pas de recovery).
+  // Décision 29/08 (données live) : un stop sur la VALEUR brute coupe des
+  // fee-harvesters in-range en pleine collecte (CYBERLEEK −5,6 % valeur alors
+  // qu'in-range 90 % du temps, fees +7,7 $). Stop sur le NET : coupe les death
+  // spirals (cc −12 %, Pistacio −11 %, Morty −13 % net) et épargne les
+  // fee-harvesters (CYBERLEEK −3,8 %, GTA6 −2,8 % net). Doctrine fees +++.
+  valueStopLoss: num("VALUE_STOP_LOSS", 0.10),
   minClaimUsd: num("MIN_CLAIM_USD", 25),
   // Pilote réel : alerte « position en attente » après X h hors range (aucun
   // fee) — décision laisser dormir / redéployer (kill-switch).

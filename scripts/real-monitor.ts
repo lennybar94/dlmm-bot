@@ -322,23 +322,24 @@ export async function realMonitor(): Promise<number> {
       continue;
     }
 
-    // 1.5) Value stop-loss (garde-fou CYBERLEEK/GTA6, 2026-08-27) : le
-    //      hard-stop prix (dip 0.85) ne coupe que la mort du token ; une
-    //      échelle bidask-dip qui traverse son range perd −30/−50 % de
-    //      valeur SANS qu'aucune règle ne tire (in-range = pas d'OOR,
-    //      PnL < 0 = pas de recovery). Stop sur la VALEUR (hors fees —
-    //      conservateur : les fees claimables sont récupérées au close)
-    //      vs le SOL réellement déployé à l'ouverture (refSol — PAS
-    //      deposit_usd, écart ~6 % du sizing satsmonkes). AUTO via le
+    // 1.5) Value stop-loss (garde-fou CYBERLEEK/GTA6, 2026-08-27 ; révisé
+    //      NET le 29/08) : le hard-stop prix ne coupe que la mort du token ;
+    //      une échelle bidask-dip qui traverse son range perd −30/−50 % SANS
+    //      qu'aucune règle ne tire (in-range = pas d'OOR, PnL < 0 = pas de
+    //      recovery). Stop sur la PERTE NETTE (valeur + fees − refSol) : un
+    //      fee-harvester in-range dont les fees compensent l'IL n'est PAS
+    //      coupé (doctrine fees +++ ; leçon 29/08 CYBERLEEK coupé à −5,6 %
+    //      de VALEUR alors qu'in-range). Seuil net 0.10 : coupe les death
+    //      spirals (cc −12 %, Pistacio −11 %, Morty −13 % net), épargne les
+    //      fee-harvesters (CYBERLEEK −3,8 %, GTA6 −2,8 % net). AUTO via le
     //      même kill-switch ; cooldown d'échec 1 h dans autoClose.
-    //      Validé David 27/08 : seuil 0.30, pas de trailing en v1.
-    const lossRatio = refSol > 0 ? (refSol - valueSol) / refSol : 0;
-    if (lossRatio > config.valueStopLoss) {
+    const netLossRatio = refSol > 0 ? -netPnlSol / refSol : 0;
+    if (netLossRatio > config.valueStopLoss) {
       if (config.realExitAuto) {
         const m = await autoClose(
           pos,
           "value-stop",
-          `valeur ${(lossRatio * 100).toFixed(1)}% sous le déployé (${valueUsd.toFixed(0)}$ vs ${(refSol * solUsd).toFixed(0)}$)`,
+          `perte nette ${(netLossRatio * 100).toFixed(1)}% (net ${netPnlUsd.toFixed(0)}$ — fees ${feesUsd.toFixed(2)}$)`,
           netPnlUsd,
           valueUsd,
           creds
@@ -346,7 +347,7 @@ export async function realMonitor(): Promise<number> {
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
         alerts++;
       } else if (Date.now() - lastAlertAt(pos.id, "real-value-stop") > ALERT_COOLDOWN_MS) {
-        const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : VALUE-STOP — valeur ${(lossRatio * 100).toFixed(1)}% sous le déployé (${valueUsd.toFixed(0)}$) — fermer : ${killCmd}`;
+        const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : VALUE-STOP — perte nette ${(netLossRatio * 100).toFixed(1)}% (net ${netPnlUsd.toFixed(0)}$) — fermer : ${killCmd}`;
         logEvent("real-value-stop", msg, pos.id, pos.pool_address);
         if (creds) await sendTelegram(creds.token, creds.chatId, msg);
         alerts++;
