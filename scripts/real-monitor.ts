@@ -39,6 +39,14 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_real_marks_pos ON real_marks(position_id
 const binPrice = (binId: number, step: number): number => Math.pow(1 + step / 10000, binId);
 const ts = (): string => new Date().toISOString().slice(11, 16);
 
+// Tag profit/perte explicite (demande David 30/08) : chaque notification
+// Telegram identifie clairement le sens du PnL net (valeur + fees − refSol).
+function pnlTag(netPnlUsd: number): string {
+  return netPnlUsd >= 0
+    ? `💰 PROFIT +${netPnlUsd.toFixed(1)}$`
+    : `🔻 PERTE -${Math.abs(netPnlUsd).toFixed(1)}$`;
+}
+
 function lastAlertAt(positionId: number, type: string): number {
   const row = db
     .prepare(`SELECT MAX(created_at) AS at FROM events WHERE type = ? AND position_id = ?`)
@@ -78,7 +86,7 @@ async function autoClose(
     valueUsd > deposit * 0.1 &&
     valueUsd < deposit * 10;
   if (!sane) {
-    const m = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : auto-close ${reason} DÉSARMÉ — valeurs anormales (pnl ${netPnlUsd.toFixed(1)}$, value ${valueUsd.toFixed(1)}$) — fermer manuellement : ${manualCmd}`;
+    const m = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : auto-close ${reason} DÉSARMÉ — ${pnlTag(netPnlUsd)} — valeurs anormales (value ${valueUsd.toFixed(1)}$) — fermer manuellement : ${manualCmd}`;
     logEvent("real-auto-close-fail", m, id, String(pos.pool_address));
     return m;
   }
@@ -121,11 +129,11 @@ async function autoClose(
         }
       }
     }
-    const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
+    const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${pnlTag(netPnlUsd)} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
     logEvent("real-auto-close", m, id, String(pos.pool_address));
     return m;
   } catch (e) {
-    const m = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : AUTO-CLOSE ${reason} ÉCHOUÉ — ${String(e).slice(0, 140)} — fermer manuellement : ${manualCmd}`;
+    const m = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : AUTO-CLOSE ${reason} ÉCHOUÉ — ${pnlTag(netPnlUsd)} — ${String(e).slice(0, 140)} — fermer manuellement : ${manualCmd}`;
     logEvent("real-auto-close-fail", m, id, String(pos.pool_address));
     return m;
   }
@@ -314,7 +322,7 @@ export async function realMonitor(): Promise<number> {
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
         alerts++;
       } else if (Date.now() - lastAlertAt(pos.id, "real-hard-stop") > ALERT_COOLDOWN_MS) {
-        const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : HARD-STOP — chute ${(dayDrop * 100).toFixed(1)}% depuis l'entrée (prix ${price.toPrecision(4)}) — fermer : ${killCmd}`;
+        const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : HARD-STOP — ${pnlTag(netPnlUsd)} — chute ${(dayDrop * 100).toFixed(1)}% depuis l'entrée (prix ${price.toPrecision(4)}) — fermer : ${killCmd}`;
         logEvent("real-hard-stop", msg, pos.id, pos.pool_address);
         if (creds) await sendTelegram(creds.token, creds.chatId, msg);
         alerts++;
@@ -339,7 +347,7 @@ export async function realMonitor(): Promise<number> {
         const m = await autoClose(
           pos,
           "value-stop",
-          `perte nette ${(netLossRatio * 100).toFixed(1)}% (net ${netPnlUsd.toFixed(0)}$ — fees ${feesUsd.toFixed(2)}$)`,
+          `perte nette ${(netLossRatio * 100).toFixed(1)}% (fees ${feesUsd.toFixed(2)}$)`,
           netPnlUsd,
           valueUsd,
           creds
@@ -347,7 +355,7 @@ export async function realMonitor(): Promise<number> {
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
         alerts++;
       } else if (Date.now() - lastAlertAt(pos.id, "real-value-stop") > ALERT_COOLDOWN_MS) {
-        const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : VALUE-STOP — perte nette ${(netLossRatio * 100).toFixed(1)}% (net ${netPnlUsd.toFixed(0)}$) — fermer : ${killCmd}`;
+        const msg = `🚨 [${ts()}] DLMM RÉEL ${pos.name} : VALUE-STOP — ${pnlTag(netPnlUsd)} — perte nette ${(netLossRatio * 100).toFixed(1)}% — fermer : ${killCmd}`;
         logEvent("real-value-stop", msg, pos.id, pos.pool_address);
         if (creds) await sendTelegram(creds.token, creds.chatId, msg);
         alerts++;
@@ -365,7 +373,7 @@ export async function realMonitor(): Promise<number> {
         const m = await autoClose(
           pos,
           "recovery-exit",
-          `PnL net ${netPnlUsd.toFixed(1)}$ au rebond (fees ${feesUsd.toFixed(2)}$)`,
+          `au rebond (fees ${feesUsd.toFixed(2)}$)`,
           netPnlUsd,
           valueUsd,
           creds
@@ -375,7 +383,7 @@ export async function realMonitor(): Promise<number> {
         continue; // fermée (ou échec traité) — rien d'autre ce tick
       }
       if (Date.now() - lastAlertAt(pos.id, "real-recovery-exit") > ALERT_COOLDOWN_MS) {
-        const msg = `🟢 [${ts()}] DLMM RÉEL ${pos.name} : RECOVERY-EXIT — PnL net ≥ 0 au rebond (${netPnlUsd.toFixed(1)}$ dont fees ${feesUsd.toFixed(2)}$) — fermer en gain ? ${killCmd}`;
+        const msg = `🟢 [${ts()}] DLMM RÉEL ${pos.name} : RECOVERY-EXIT — ${pnlTag(netPnlUsd)} — au rebond, dont fees ${feesUsd.toFixed(2)}$ — fermer en gain ? ${killCmd}`;
         logEvent("real-recovery-exit", msg, pos.id, pos.pool_address);
         if (creds) await sendTelegram(creds.token, creds.chatId, msg);
         alerts++;
@@ -470,7 +478,7 @@ export async function realMonitor(): Promise<number> {
           const m = await autoClose(
             pos,
             netOk ? "oor-redeploy" : "oor-force",
-            `hors range ${oorHours.toFixed(1)} h (0 fee) — PnL net ${netPnlUsd.toFixed(1)}$ → ${netOk ? "redéploiement" : "libération du capital (24 h atteint)"}`,
+            `hors range ${oorHours.toFixed(1)} h (0 fee) — ${pnlTag(netPnlUsd)} → ${netOk ? "redéploiement" : "libération du capital (24 h atteint)"}`,
             netPnlUsd,
             valueUsd,
             creds
@@ -484,7 +492,7 @@ export async function realMonitor(): Promise<number> {
           // pas de Telegram pour la position en attente.
           logEvent(
             "real-oor",
-            `⏳ ${pos.name} : HORS RANGE depuis ${oorHours.toFixed(1)} h (0 fee, PnL ${netPnlUsd.toFixed(1)}$) — ${config.realExitAuto ? (netOk ? "close auto au prochain tick (redéploiement)" : `sous l'eau — force-close auto à ${config.realOorForceCloseHours} h`) : `laisser dormir ou redéployer ? ${killCmd}`}`,
+            `⏳ ${pos.name} : HORS RANGE depuis ${oorHours.toFixed(1)} h (0 fee, ${pnlTag(netPnlUsd)}) — ${config.realExitAuto ? (netOk ? "close auto au prochain tick (redéploiement)" : `sous l'eau — force-close auto à ${config.realOorForceCloseHours} h`) : `laisser dormir ou redéployer ? ${killCmd}`}`,
             pos.id,
             pos.pool_address
           );
@@ -539,7 +547,7 @@ export async function realMonitor(): Promise<number> {
           if (Date.now() - lastAlertAt(pos.id, "real-cooling-off") > ALERT_COOLDOWN_MS) {
             logEvent(
               "real-cooling-off",
-              `🌡️ ${pos.name} : ${detail} — sortie anticipée ? ${killCmd}`,
+              `🌡️ ${pos.name} : ${detail} — ${pnlTag(netPnlUsd)} — sortie anticipée ? ${killCmd}`,
               pos.id,
               pos.pool_address
             );

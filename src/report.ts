@@ -62,14 +62,14 @@ export async function buildDailyReport(): Promise<string> {
       totFees += fees;
       totSol += Number(r.amount_y) || 0;
       lines.push(
-        `  • ${r.name} [${r.strategy}] ${Number(r.deposit_usd).toFixed(0)}$ (${Number(r.amount_y).toFixed(2)} SOL) — ${inR} — pnl ${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}$ — fees ${fees.toFixed(2)}$`
+        `  • ${r.name} [${r.strategy}] ${Number(r.deposit_usd).toFixed(0)}$ (${Number(r.amount_y).toFixed(2)} SOL) — ${inR} — ${pnl >= 0 ? "💰" : "🔻"} pnl ${pnl >= 0 ? "+" : "-"}${Math.abs(pnl).toFixed(1)}$ — fees ${fees.toFixed(2)}$`
       );
     }
     // PnL en SOL (benchmark CTT_Dev : 2 SOL → 4.94 SOL en 3 semaines) — le
     // pilote réel en unités natives.
     const solUsd = await getSolPriceUsd();
     lines.push(
-      `  TOTAL ${realRows.length} positions — ${totSol.toFixed(2)} SOL déployés — pnl ${totPnl >= 0 ? "+" : ""}${totPnl.toFixed(1)}$ — fees ${totFees.toFixed(2)}$` +
+      `  TOTAL ${realRows.length} positions — ${totSol.toFixed(2)} SOL déployés — ${totPnl >= 0 ? "💰" : "🔻"} pnl ${totPnl >= 0 ? "+" : "-"}${Math.abs(totPnl).toFixed(1)}$ — fees ${totFees.toFixed(2)}$` +
         (solUsd && solUsd > 0 ? ` (pnl ${(totPnl / solUsd).toFixed(3)} SOL, prix ${solUsd.toFixed(2)}$)` : "")
     );
     lines.push("");
@@ -98,11 +98,11 @@ export async function buildDailyReport(): Promise<string> {
       totSol += Number(r.amount_y) || 0;
       if (r.status === "open") open++;
       lines.push(
-        `  • ${r.name} [${r.strategy}] ${Number(r.deposit_usd).toFixed(0)}$ (${Number(r.amount_y).toFixed(2)} SOL) — ${r.status === "open" ? "ouverte" : "fermée"} — pur ${pur >= 0 ? "+" : ""}${pur.toFixed(1)}$ — fees ${fees.toFixed(2)}$`
+        `  • ${r.name} [${r.strategy}] ${Number(r.deposit_usd).toFixed(0)}$ (${Number(r.amount_y).toFixed(2)} SOL) — ${r.status === "open" ? "ouverte" : "fermée"} — ${pur >= 0 ? "💰" : "🔻"} pur ${pur >= 0 ? "+" : "-"}${Math.abs(pur).toFixed(1)}$ — fees ${fees.toFixed(2)}$`
       );
     }
     lines.push(
-      `  TOTAL ${pilotRows.length} pos (${open} ouvertes) — ${totSol.toFixed(2)} SOL — pur ${totPur >= 0 ? "+" : ""}${totPur.toFixed(1)}$ — fees ${totFees.toFixed(2)}$`
+      `  TOTAL ${pilotRows.length} pos (${open} ouvertes) — ${totSol.toFixed(2)} SOL — ${totPur >= 0 ? "💰" : "🔻"} pur ${totPur >= 0 ? "+" : "-"}${Math.abs(totPur).toFixed(1)}$ — fees ${totFees.toFixed(2)}$`
     );
     lines.push("");
   }
