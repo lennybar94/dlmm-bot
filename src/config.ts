@@ -93,6 +93,13 @@ export const config = {
   // (buffer gas + marge de manœuvre), appliquée à CHAQUE ouverture réelle
   // (cron open:paper compris). 0.8 = 80 % max déployés.
   realMaxDeployRatio: num("REAL_MAX_DEPLOY_RATIO", 0.8),
+  // Réserve pilote L4-B (31/08, go David) : capital DÉDIÉ au pilote, soustrait
+  // du budget BOOK uniquement (garde open-paper : déployé+projeté ≤
+  // 0.8×(total−réserve)). Sans ça, open-paper */5 re-consomme toute marge
+  // libérée en <5 min et le pilote ne peut jamais ouvrir (preuve 30/08 : le
+  // top-up +9,54 absorbé par le book). Le pilote (l4b-open) garde SA garde
+  // 0.8×total — la réserve lui garantit juste de la place.
+  pilotReserveSol: num("PILOT_RESERVE_SOL", 0),
   // Plafond de mise par position en mode RÉEL (décision David 2026-08-24,
   // réévalué 2026-08-25) : le sizing satsmonkes par classe (500/1000/2000$) est
   // calibré pour un capital 5-10k$. Avec 13.29 SOL il fallait un sizing RELATIF

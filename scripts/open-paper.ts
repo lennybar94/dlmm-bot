@@ -197,11 +197,14 @@ for (const row of scanRows) {
         s: number;
       }
     ).s;
-    const maxDeploy = (deployed + balance) * config.realMaxDeployRatio;
+    // Réserve pilote L4-B (31/08) : le book ne peut PAS déployer dans le
+    // capital réservé au pilote → budget = ratio × (capital − réserve).
+    const capitalBook = deployed + balance - config.pilotReserveSol;
+    const maxDeploy = capitalBook * config.realMaxDeployRatio;
     if (deployed + depositY > maxDeploy) {
       skippedSoldeGuard++;
       console.log(
-        `  ⛔ ${row.name} : ${depositY.toFixed(2)} SOL projetés → déployé ${deployed.toFixed(2)} + ${depositY.toFixed(2)} > ${maxDeploy.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${(deployed + balance).toFixed(2)} SOL de capital) — skip`
+        `  ⛔ ${row.name} : ${depositY.toFixed(2)} SOL projetés → déployé ${deployed.toFixed(2)} + ${depositY.toFixed(2)} > ${maxDeploy.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${capitalBook.toFixed(2)} SOL de capital book${config.pilotReserveSol ? ` — réserve pilote ${config.pilotReserveSol} SOL` : ""}) — skip`
       );
       continue;
     }

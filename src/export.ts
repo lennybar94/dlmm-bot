@@ -355,7 +355,10 @@ export async function exportData(): Promise<string> {
   }
   const deployedSol = realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0);
   const totalSol = walletFreeSol !== null ? walletFreeSol + deployedSol : null;
-  const guardPct = totalSol !== null ? deployedSol / (0.8 * totalSol) : null;
+  // gardePct BOOK : la réserve pilote (L4-B, 31/08) est soustraite du capital —
+  // ≥ 1 = book figé (la machine ne peut plus ouvrir).
+  const capitalBook = totalSol !== null ? totalSol - config.pilotReserveSol : null;
+  const guardPct = capitalBook !== null && capitalBook > 0 ? deployedSol / (0.8 * capitalBook) : null;
 
   // --- Value-stop 24h (doctrine « gagner petit et souvent », filet −15 %) ---
   const vsSince = now - 24 * 3600 * 1000;
