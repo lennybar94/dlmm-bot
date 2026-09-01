@@ -69,7 +69,7 @@ try {
     lines.push(`🎯 PILOTE L4-B : candidat CONFORME — ${r.token_x_symbol}-${r.token_y_symbol}`);
     lines.push(`Pool : ${r.pool_address}`);
     lines.push(`TVL ${Math.round((r.tvl ?? 0) / 1000)}k$ · vol24h ${Math.round((r.volume_24h ?? 0) / 1000)}k$ · âge ${Math.round(r.pool_age_days ?? 0)} j · tendance ✓`);
-    lines.push(`Ouverture MANUELLE : cd /home/polybot/dlmm-bot && npx tsx scripts/l4b-open.ts --pick=${r.pool_address} --usd=500`);
+    lines.push(`Ouverture (décideur auto) : cd /home/polybot/dlmm-bot && npx tsx scripts/l4b-open.ts --pick=${r.pool_address} --usd=500 --confirm=REAL-OPEN`);
   }
   for (const { r, fails } of near) {
     lines.push(`👀 PILOTE L4-B : PRESQUE conforme — ${r.token_x_symbol}-${r.token_y_symbol}`);
