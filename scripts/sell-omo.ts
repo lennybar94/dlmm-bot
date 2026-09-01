@@ -80,9 +80,22 @@ tx.sign(signer);
 const solBefore = (await conn.getBalance(signer.publicKey)) / 1e9;
 const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 5 });
 console.log(`Tx envoyée : ${sig}`);
-const conf = await conn.confirmTransaction(sig, "confirmed");
-console.log(`Confirmation : ${conf.value.err ? "ÉCHEC " + JSON.stringify(conf.value.err) : "OK"}`);
-if (conf.value.err) process.exit(1);
+// Confirmation POLLING HTTP (leçon b267c0f — confirmTransaction = souscription
+// ws, expire à 30 s quand le tier ws Helius sature alors que la tx passe).
+const confDeadline = Date.now() + 60_000;
+let confStatus: { confirmationStatus?: string; err?: unknown } | null = null;
+for (;;) {
+  const st = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
+  confStatus = st?.value ?? null;
+  if (confStatus?.err) { console.log(`Confirmation : ÉCHEC ${JSON.stringify(confStatus.err)}`); process.exit(1); }
+  if (confStatus?.confirmationStatus === "confirmed" || confStatus?.confirmationStatus === "finalized") break;
+  if (Date.now() > confDeadline) {
+    console.log(`Confirmation : TIMEOUT 60 s (dernier statut ${confStatus ? confStatus.confirmationStatus : "inconnu"}) — tx peut être passée, vérifier la sig`);
+    process.exit(1);
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+}
+console.log("Confirmation : OK");
 
 // --- Vérification : 2 lectures indépendantes + sigs ---
 await new Promise((r) => setTimeout(r, 3000));

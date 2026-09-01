@@ -189,8 +189,26 @@ for (const wt of walletTokens) {
     tx.sign(signer);
     const solBefore = (await conn.getBalance(signer.publicKey)) / 1e9;
     const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 5 });
-    const conf = await conn.confirmTransaction(sig, "confirmed");
-    if (conf.value.err) throw new Error(JSON.stringify(conf.value.err));
+    // Confirmation POLLING HTTP (leçon b267c0f, 27/08 — réappliquée 01/09 au
+    // sweep) : confirmTransaction utilise la souscription ws interne de web3.js
+    // → quand le tier ws Helius sature (429), elle expire à 30 s alors que la
+    // tx passe on-chain → fausses alertes 🚨 "SWEEP ÉCHOUÉ" (4× en 2 j :
+    // fone/REDACTED/MANLET/BULLSHIT, toutes passées). Polling getSignatureStatus
+    // : 1,5 s, timeout 60 s.
+    const confDeadline = Date.now() + 60_000;
+    let confStatus: { confirmationStatus?: string; err?: unknown } | null = null;
+    for (;;) {
+      const st = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
+      confStatus = st?.value ?? null;
+      if (confStatus?.err) throw new Error(`swap échoué on-chain: ${JSON.stringify(confStatus.err)}`);
+      if (confStatus?.confirmationStatus === "confirmed" || confStatus?.confirmationStatus === "finalized") break;
+      if (Date.now() > confDeadline) {
+        throw new Error(
+          `confirmation timeout 60s (sig ${sig.slice(0, 12)}… — dernier statut ${confStatus ? confStatus.confirmationStatus : "inconnu"})`
+        );
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
     await new Promise((r) => setTimeout(r, 2500));
     const bal1 = (await conn.getBalance(signer.publicKey)) / 1e9;
     const bal2 = (await conn.getBalance(signer.publicKey)) / 1e9;
