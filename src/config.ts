@@ -93,13 +93,14 @@ export const config = {
   // (buffer gas + marge de manœuvre), appliquée à CHAQUE ouverture réelle
   // (cron open:paper compris). 0.8 = 80 % max déployés.
   realMaxDeployRatio: num("REAL_MAX_DEPLOY_RATIO", 0.8),
-  // Réserve pilote L4-B (31/08, go David) : capital DÉDIÉ au pilote, soustrait
-  // du budget BOOK uniquement (garde open-paper : déployé+projeté ≤
-  // 0.8×(total−réserve)). Sans ça, open-paper */5 re-consomme toute marge
-  // libérée en <5 min et le pilote ne peut jamais ouvrir (preuve 30/08 : le
-  // top-up +9,54 absorbé par le book). Le pilote (l4b-open) garde SA garde
-  // 0.8×total — la réserve lui garantit juste de la place.
-  pilotReserveSol: num("PILOT_RESERVE_SOL", 0),
+  // Manches book hybride (01/09, go David) : TREND_SLEEVE_SHARE = part du
+  // capital TOTAL réservée à la manche tendance (spot/curve balancés L4-B).
+  // Manche memes (fees, open-paper) = (1−share). Gardes : open-paper →
+  // déployé memes ≤ 0.8×(1−share)×total ; l4b-open → déployé tendance +
+  // besoin ≤ 0.8×share×total. Remplace PILOT_RESERVE_SOL (réserve fixe 6.5,
+  // 31/08 — preuve : open-paper */5 re-consommait toute marge <5 min) : la
+  // part dynamique scale avec les top-ups.
+  trendSleeveShare: num("TREND_SLEEVE_SHARE", 0.4),
   // Plafond de mise par position en mode RÉEL (décision David 2026-08-24,
   // réévalué 2026-08-25) : le sizing satsmonkes par classe (500/1000/2000$) est
   // calibré pour un capital 5-10k$. Avec 13.29 SOL il fallait un sizing RELATIF

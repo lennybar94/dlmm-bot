@@ -201,7 +201,7 @@ export async function exportData(): Promise<string> {
   const realRows = (db
     .prepare(
       `SELECT rp.id, rp.name, rp.token_x_symbol, rp.token_y_symbol, rp.strategy, rp.pool_address, rp.deposit_usd, rp.amount_y,
-              rp.min_bin_id, rp.max_bin_id, rp.position_pubkey, rp.opened_at,
+              rp.min_bin_id, rp.max_bin_id, rp.position_pubkey, rp.opened_at, rp.pilot,
               rm.value_usd, rm.net_pnl_usd, rm.in_range, rm.taken_at
        FROM real_positions rp
        LEFT JOIN real_marks rm ON rm.id = (
@@ -353,12 +353,15 @@ export async function exportData(): Promise<string> {
   } catch {
     walletFreeSol = null; // RPC indisponible → le dashboard affiche sans solde libre
   }
-  const deployedSol = realRows.reduce((a, p) => a + Number(p.amount_y ?? 0), 0);
+  const deployedMeme = realRows.reduce((a, p) => a + (p.pilot ? 0 : Number(p.amount_y ?? 0)), 0);
+  const deployedTrend = realRows.reduce((a, p) => a + (p.pilot ? Number(p.amount_y ?? 0) : 0), 0);
+  const deployedSol = deployedMeme + deployedTrend;
   const totalSol = walletFreeSol !== null ? walletFreeSol + deployedSol : null;
-  // gardePct BOOK : la réserve pilote (L4-B, 31/08) est soustraite du capital —
-  // ≥ 1 = book figé (la machine ne peut plus ouvrir).
-  const capitalBook = totalSol !== null ? totalSol - config.pilotReserveSol : null;
-  const guardPct = capitalBook !== null && capitalBook > 0 ? deployedSol / (0.8 * capitalBook) : null;
+  // Manches book hybride (01/09) : guardPct = manche MEMES (open-paper),
+  // bornée à 0.8×(1−share)×total — ≥ 1 = manche memes figée (la machine ne
+  // peut plus ouvrir tant que des closes ne libèrent pas de la place).
+  const capitalBook = totalSol !== null ? totalSol * (1 - config.trendSleeveShare) : null;
+  const guardPct = capitalBook !== null && capitalBook > 0 ? deployedMeme / (0.8 * capitalBook) : null;
 
   // --- Value-stop 24h (doctrine « gagner petit et souvent », filet −15 %) ---
   const vsSince = now - 24 * 3600 * 1000;
@@ -482,6 +485,16 @@ export async function exportData(): Promise<string> {
       walletFreeSol,
       totalSol,
       guardPct,
+      // Manches book hybride (01/09) : état de la manche tendance (L4-B).
+      trendSleeve: {
+        share: config.trendSleeveShare,
+        budgetSol: totalSol !== null ? totalSol * config.trendSleeveShare : null,
+        deployedSol: deployedTrend,
+        guardPct:
+          totalSol !== null && totalSol > 0
+            ? deployedTrend / (0.8 * totalSol * config.trendSleeveShare)
+            : null,
+      },
       valueStop,
       pilot,
       realHistoryStartMs: histRow.t ?? null,

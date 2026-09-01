@@ -121,18 +121,26 @@ if (signer.publicKey.toBase58() !== PILOT) {
   process.exit(1);
 }
 const freeSol = (await conn.getBalance(signer.publicKey)) / 1e9;
-const deployedSol = (db
-  .prepare("SELECT COALESCE(SUM(amount_y),0) s FROM real_positions WHERE status='open'")
+// Manches book hybride (01/09, go David) : la manche tendance (CE script)
+// dispose de TREND_SLEEVE_SHARE du capital TOTAL ; la manche memes (open-paper)
+// est bornée à (1−share). Garde tendance : déployé tendance + besoin ≤
+// 0.8 × budget tendance.
+const deployedTrend = (db
+  .prepare("SELECT COALESCE(SUM(amount_y),0) s FROM real_positions WHERE status='open' AND pilot=1")
   .get() as { s: number }).s;
-const totalSol = freeSol + deployedSol;
-const guardPct = totalSol > 0 ? (deployedSol + needSol) / (0.8 * totalSol) : 0;
-console.log(`Solde libre ${freeSol.toFixed(2)} SOL · déployé ${deployedSol.toFixed(2)} · total ${totalSol.toFixed(2)} · garde 80% après ouverture : ${(guardPct * 100).toFixed(0)}%`);
+const deployedMemes = (db
+  .prepare("SELECT COALESCE(SUM(amount_y),0) s FROM real_positions WHERE status='open' AND (pilot IS NULL OR pilot = 0)")
+  .get() as { s: number }).s;
+const totalSol = freeSol + deployedTrend + deployedMemes;
+const trendBudget = totalSol * config.trendSleeveShare;
+const guardPct = trendBudget > 0 ? (deployedTrend + needSol) / (0.8 * trendBudget) : 0;
+console.log(`Solde libre ${freeSol.toFixed(2)} SOL · manche memes déployée ${deployedMemes.toFixed(2)} · manche tendance déployée ${deployedTrend.toFixed(2)} · total ${totalSol.toFixed(2)} · garde manche tendance après ouverture : ${(guardPct * 100).toFixed(0)}% (budget ${trendBudget.toFixed(2)} SOL = ${(config.trendSleeveShare * 100).toFixed(0)}% du total)`);
 if (freeSol < needSol) {
   console.error(`\n⛔ Solde libre insuffisant (${freeSol.toFixed(2)} < ${needSol.toFixed(2)}) — pas d'ouverture.`);
   process.exit(1);
 }
 if (guardPct > 1) {
-  console.error(`\n⛔ Garde 80 % dépassée (déployé + pilote > 80 % du total) — top-up requis (formule 27/08).`);
+  console.error(`\n⛔ Garde manche tendance dépassée (déployé tendance + besoin > 80 % du budget tendance ${trendBudget.toFixed(2)} SOL) — top-up ou fermeture de memes requis.`);
   process.exit(1);
 }
 

@@ -193,18 +193,21 @@ for (const row of scanRows) {
     const depositY = dep / estimateYUsd(opp.pool);
     const balance = (await realCtx!.connection.getBalance(realCtx!.signer.publicKey)) / 1e9;
     const deployed = (
-      db.prepare(`SELECT COALESCE(SUM(amount_y),0) s FROM real_positions WHERE status='open'`).get() as {
+      db.prepare(`SELECT COALESCE(SUM(amount_y),0) s FROM real_positions WHERE status='open' AND (pilot IS NULL OR pilot = 0)`).get() as {
         s: number;
       }
     ).s;
-    // Réserve pilote L4-B (31/08) : le book ne peut PAS déployer dans le
-    // capital réservé au pilote → budget = ratio × (capital − réserve).
-    const capitalBook = deployed + balance - config.pilotReserveSol;
+    // Manches book hybride (01/09, go David) : manche memes = (1−share) du
+    // capital TOTAL — la part tendance L4-B est réservée, open-paper ne peut
+    // pas y toucher (leçon 31/08 : la machine re-consommait toute marge en
+    // <5 min, le pilote ne passait jamais).
+    const totalSol = deployed + balance;
+    const capitalBook = totalSol * (1 - config.trendSleeveShare);
     const maxDeploy = capitalBook * config.realMaxDeployRatio;
     if (deployed + depositY > maxDeploy) {
       skippedSoldeGuard++;
       console.log(
-        `  ⛔ ${row.name} : ${depositY.toFixed(2)} SOL projetés → déployé ${deployed.toFixed(2)} + ${depositY.toFixed(2)} > ${maxDeploy.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${capitalBook.toFixed(2)} SOL de capital book${config.pilotReserveSol ? ` — réserve pilote ${config.pilotReserveSol} SOL` : ""}) — skip`
+        `  ⛔ ${row.name} : ${depositY.toFixed(2)} SOL projetés → déployé ${deployed.toFixed(2)} + ${depositY.toFixed(2)} > ${maxDeploy.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${capitalBook.toFixed(2)} SOL de capital manche memes — réserve tendance ${(config.trendSleeveShare * 100).toFixed(0)}% (${(totalSol * config.trendSleeveShare).toFixed(1)} SOL)) — skip`
       );
       continue;
     }

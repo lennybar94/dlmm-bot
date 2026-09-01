@@ -278,8 +278,14 @@ function render(d) {
     const p1d = (rs.progression || {})["1D"] || { pnl: 0, fees: 0, profit: 0 };
     const guardCls = rs.guardPct != null ? (rs.guardPct >= 1 ? "neg" : rs.guardPct >= 0.9 ? "warn" : "") : "";
     const guardTxt = rs.guardPct != null
-      ? Math.round(rs.guardPct * 100) + " % de la garde 80 %" + (rs.guardPct >= 1 ? " — book figé" : "")
+      ? Math.round(rs.guardPct * 100) + " % de la garde 80 % (manche memes)" + (rs.guardPct >= 1 ? " — figée" : "")
       : "garde indispo";
+    const ts = rs.trendSleeve || null;
+    const tsTxt = ts
+      ? "déployé " + fmt(ts.deployedSol, 2) + " / " + fmt(ts.budgetSol ?? 0, 1) + " SOL"
+        + (ts.guardPct != null ? " · " + Math.round(ts.guardPct * 100) + " % de la garde 80 %" : "")
+      : "spot/curve L4-B";
+    const tsCls = ts && ts.guardPct != null && ts.guardPct >= 1 ? "neg" : "";
     const vs = rs.valueStop || { count: 0, avgLossPct: 0, closes: [] };
     const vsRebounds = (vs.closes || []).filter((c) => c.rebound).length;
     // Valorisation MARCHÉ des positions (marks, hors fees en attente) — sert
@@ -291,6 +297,8 @@ function render(d) {
         + (marketSol != null ? " · positions au marché " + fmt(marketSol, 1) + " SOL" : ""), ""],
       ["Déployé", fmt(rs.deployedSol, 2) + " SOL",
         rs.open + " positions · " + guardTxt, guardCls],
+      ["Manche tendance", ts ? fmt(ts.deployedSol, 2) + " SOL" : "—",
+        tsTxt, tsCls],
       ["PnL pur (trading)", usd(rs.pnlAllTimeUsd, 0),
         "1D : " + usd(p1d.pnl, 0), sign(rs.pnlAllTimeUsd)],
       ["Fees (liquidité)", usd(rs.feesAllTimeUsd, 0),
