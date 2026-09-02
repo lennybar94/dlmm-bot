@@ -160,7 +160,14 @@ export async function realMonitor(): Promise<number> {
   // credits RPC = 98,7 % du breakdown). Montants IDENTIQUES (validé 26/08 :
   // totalXAmount/totalYAmount/feeX/feeY égaux sur 8/8 positions).
   let positionsByKey = new Map<string, { positionData: any; lbPair: any }>();
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // ⚠️ 3 tentatives, backoff 5s×n (incident 02/09/2026 11:36-12:18 : Helius a
+  // DEPRIORITISÉ getProgramAccounts — "Request deprioritized due to number of
+  // accounts requested. Please use getProgramAccountsV2" — 500 en rafale pendant
+  // ~40 min, surveillance aveugle malgré le cron 1 min. Les 2 tentatives à 2 s
+  // encaissaient mal un incident transitoire plus long ; le tick suivant réessaie
+  // de toute façon, mais un run qui tient 15 s de retry couvre mieux un micro-
+  // pic provider. Format des lignes de log CONSERVÉ (le watchdog compte « KO »).
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const all = await getAllLbPairPositionsByUser(connection, user.publicKey, { cluster: config.cluster });
       for (const info of all.values()) {
@@ -170,9 +177,9 @@ export async function realMonitor(): Promise<number> {
       }
       break;
     } catch (e) {
-      if (attempt === 1) {
+      if (attempt < 3) {
         console.warn(`[real-monitor] lecture batchée (transitoire, retentera) : ${String(e).slice(0, 120)}`);
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 5000 * attempt));
       } else {
         console.warn(`[real-monitor] lecture batchée KO — skip run : ${String(e).slice(0, 120)}`);
         return 0;
