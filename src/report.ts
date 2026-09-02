@@ -107,6 +107,83 @@ export async function buildDailyReport(): Promise<string> {
     lines.push("");
   }
 
+  // TOTAUX par pilote + global (demande David 03/09). Conventions :
+  // - Réalisé : dernier mark de chaque position CLOSEE (net = valeur + fees −
+  //   refSol au moment du close ; mark inséré juste avant la décision d'exit,
+  //   même source que valuestop-report.cjs). Les gains des sweeps de résidus
+  //   ultérieurs ne sont PAS comptés ici (visibles dans les événements 24h).
+  // - Flottant : dernier mark des positions OUVERTES (fees en attente incluses).
+  const totalsFor = (pilot: number) => {
+    const openRows = db
+      .prepare(`SELECT id FROM real_positions WHERE pilot = ? AND status = 'open'`)
+      .all(pilot) as { id: number }[];
+    let openPnl = 0;
+    let openFees = 0;
+    for (const r of openRows) {
+      const m = db
+        .prepare(`SELECT net_pnl_usd, fees_usd FROM real_marks WHERE position_id = ? ORDER BY id DESC LIMIT 1`)
+        .get(r.id) as { net_pnl_usd: number; fees_usd: number } | undefined;
+      openPnl += m?.net_pnl_usd ?? 0;
+      openFees += m?.fees_usd ?? 0;
+    }
+    const openSol = (
+      db.prepare(`SELECT COALESCE(SUM(amount_y), 0) s FROM real_positions WHERE pilot = ? AND status = 'open'`).get(pilot) as { s: number }
+    ).s;
+    // Dernier mark de chaque close (JOIN sur l'id max par position).
+    const closed = db
+      .prepare(
+        `SELECT m.net_pnl_usd AS pnl, m.fees_usd AS fees
+         FROM real_positions p
+         JOIN real_marks m ON m.id = (SELECT id FROM real_marks WHERE position_id = p.id ORDER BY id DESC LIMIT 1)
+         WHERE p.pilot = ? AND p.status = 'closed'`
+      )
+      .all(pilot) as { pnl: number; fees: number }[];
+    const realizedPnl = closed.reduce((a, c) => a + (c.pnl ?? 0), 0);
+    const realizedFees = closed.reduce((a, c) => a + (c.fees ?? 0), 0);
+    const wins = closed.filter((c) => (c.pnl ?? 0) >= 0).length;
+    const grossProfit = closed.filter((c) => (c.pnl ?? 0) > 0).reduce((a, c) => a + c.pnl, 0);
+    const grossLoss = closed.filter((c) => (c.pnl ?? 0) < 0).reduce((a, c) => a + c.pnl, 0);
+    return {
+      openN: openRows.length, openPnl, openFees, openSol,
+      closedN: closed.length, wins, losses: closed.length - wins,
+      realizedPnl, realizedFees, grossProfit, grossLoss,
+    };
+  };
+  const sgn = (v: number) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(1)}$`;
+  const tag = (v: number) => (v >= 0 ? "💰" : "🔻");
+  const tReal = totalsFor(0);
+  const tL4 = totalsFor(1);
+  lines.push("=== TOTAUX (depuis l'origine) ===");
+  for (const [label, t] of [
+    ["Pilote réel", tReal],
+    ["Pilote L4-B", tL4],
+  ] as const) {
+    if (t.closedN === 0 && t.openN === 0) continue;
+    lines.push(`${label} :`);
+    lines.push(
+      `  Réalisé : ${t.closedN} closes · ${t.wins} gains / ${t.losses} pertes · profits bruts ${sgn(t.grossProfit)} / pertes brutes ${sgn(t.grossLoss)} → ${tag(t.realizedPnl)} net ${sgn(t.realizedPnl)} (fees réalisées ${t.realizedFees.toFixed(1)}$)`
+    );
+    lines.push(
+      `  Flottant : ${t.openN} ouvertes · ${t.openSol.toFixed(2)} SOL · ${tag(t.openPnl)} pnl ${sgn(t.openPnl)} · fees en attente ${t.openFees.toFixed(1)}$`
+    );
+    const totPnl = t.realizedPnl + t.openPnl;
+    const totFees = t.realizedFees + t.openFees;
+    lines.push(`  TOTAL : ${tag(totPnl)} pnl ${sgn(totPnl)} · fees ${totFees.toFixed(1)}$`);
+  }
+  {
+    const gClosed = tReal.closedN + tL4.closedN;
+    const gWins = tReal.wins + tL4.wins;
+    const gRealized = tReal.realizedPnl + tL4.realizedPnl;
+    const gOpen = tReal.openPnl + tL4.openPnl;
+    const gFees = tReal.realizedFees + tL4.realizedFees + tReal.openFees + tL4.openFees;
+    const gSol = tReal.openSol + tL4.openSol;
+    const gPnl = gRealized + gOpen;
+    lines.push(
+      `GLOBAL : ${gClosed} closes (${gWins} gains / ${gClosed - gWins} pertes) · réalisé ${sgn(gRealized)} + flottant ${sgn(gOpen)} → ${tag(gPnl)} TOTAL ${sgn(gPnl)} · fees ${gFees.toFixed(1)}$ · ${gSol.toFixed(2)} SOL déployés`
+    );
+  }
+  lines.push("");
+
   const topOpps = db
     .prepare(
       `SELECT name, score, fee_apr_24h, tvl, volume_24h FROM pool_scans
