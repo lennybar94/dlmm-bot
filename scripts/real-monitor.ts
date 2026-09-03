@@ -478,14 +478,18 @@ export async function realMonitor(): Promise<number> {
           .get(pos.id) as { taken_at: number } | undefined
       )?.taken_at ?? pos.opened_at;
       const oorHours = (Date.now() - oorSince) / 3_600_000;
-      if (oorHours > config.realOorAlertHours) {
-        const netOk = netPnlSol >= 0;
-        const force = oorHours > config.realOorForceCloseHours;
+      const netOk = netPnlSol >= 0;
+      const force = oorHours > config.realOorForceCloseHours;
+      // ⚠️ FIX 03/09 (après coup) : le force-close sous l'eau (grace 1 h, levier
+      // « renverser la balance ») NE DOIT PAS être masqué par la porte d'alerte
+      // redeploy (6 h) — avant ce fix, passer force<alert ne servait à rien : le
+      // bloc ne s'exécutait jamais avant 6 h (leçon CTO : −15$ → −110$ en 3 marks).
+      if (oorHours > config.realOorAlertHours || (force && !netOk)) {
         if (config.realExitAuto && (netOk || force)) {
           const m = await autoClose(
             pos,
             netOk ? "oor-redeploy" : "oor-force",
-            `hors range ${oorHours.toFixed(1)} h (0 fee) — ${pnlTag(netPnlUsd)} → ${netOk ? "redéploiement" : "libération du capital (24 h atteint)"}`,
+            `hors range ${oorHours.toFixed(1)} h (0 fee) — ${pnlTag(netPnlUsd)} → ${netOk ? "redéploiement" : "libération du capital (grace 1 h écoulée)"}`,
             netPnlUsd,
             valueUsd,
             creds
