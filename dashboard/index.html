@@ -107,10 +107,11 @@
       <span style="font-size:12px;color:var(--muted)" id="progNote"></span>
     </div>
     <table id="progTable" style="max-width:680px">
-      <thead><tr><th>Période</th><th>PnL pur (trading)</th><th>Fees (liquidité)</th><th>Profit (= PnL + fees)</th></tr></thead>
+      <thead><tr><th>Période</th><th>PnL pur (trading)</th><th>Fees (liquidité)</th><th>Profit (= PnL + fees)</th><th>dont closes (n) — PnL pur | Fees | Profit</th></tr></thead>
       <tbody></tbody>
     </table>
     <div class="empty" style="display:none" id="progEmpty">Aucun mark — données insuffisantes.</div>
+    <div style="font-size:12px;color:var(--muted);margin-top:4px">« dont closes » = part des positions FERMÉES dans la fenêtre (les autres lignes du tableau ne montrent que les ouvertes). Le reste = variation des positions encore ouvertes.</div>
   </div>
   <table id="realTable">
     <thead><tr>
@@ -339,7 +340,13 @@ function render(d) {
       .filter((k) => prog[k] && histDays >= (minDays[k] || 0))
       .map((k) => {
         const p = prog[k];
-        return `<tr><td><strong>${k}</strong></td><td class="${sign(p.pnl)}">${usd(p.pnl)}</td><td class="pos">${usd(p.fees)}</td><td class="${sign(p.profit)}">${usd(p.profit)}</td></tr>`;
+        const ccTxt =
+          p.closedN != null && p.closedN > 0
+            ? `${p.closedN} close(s) · <span class="${sign(p.closedPnl)}">${usd(p.closedPnl)}</span> | <span class="pos">${usd(p.closedFees)}</span> | <span class="${sign(
+                (p.closedPnl ?? 0) + (p.closedFees ?? 0),
+              )}">${usd((p.closedPnl ?? 0) + (p.closedFees ?? 0))}</span>`
+            : "—";
+        return `<tr><td><strong>${k}</strong></td><td class="${sign(p.pnl)}">${usd(p.pnl)}</td><td class="pos">${usd(p.fees)}</td><td class="${sign(p.profit)}">${usd(p.profit)}</td><td style="font-size:12px;color:var(--muted)">${ccTxt}</td></tr>`;
       })
       .join("");
     const hidden = allKeys.filter((k) => prog[k] && !(histDays >= (minDays[k] || 0)));

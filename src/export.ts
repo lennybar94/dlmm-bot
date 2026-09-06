@@ -217,7 +217,7 @@ export async function exportData(): Promise<string> {
   // (montant parsé du message, format stable « claim AUTO 30.67$ de fees »).
   const allTimeRows = db
     .prepare(
-      `SELECT rp.id, rp.status, rp.deposit_usd, rp.last_value_usd, rp.closed_at,
+      `SELECT rp.id, rp.status, rp.deposit_usd, rp.last_value_usd, rp.closed_at, rp.close_reason,
               rm.net_pnl_usd, rm.fees_usd
        FROM real_positions rp
        LEFT JOIN real_marks rm ON rm.id = (
@@ -317,8 +317,53 @@ export async function exportData(): Promise<string> {
   };
   const eqNowV = equityAt(now);
   const feesNowV = feesAt(now);
+  // Décomposition par période (demande David 06/09) : du delta période, isoler
+  // la part des positions FERMÉES dans la fenêtre. Le tableau des pools ne
+  // montre que les ouvertes ; sans cette ligne le 1D semble « incohérent »
+  // quand une value-stop (-55 $ fone 05/09) tombe dans la fenêtre.
+  // contribution close = pure(final) − pure(dernier mark ≤ t) ; fees = même
+  // logique + claims ≤ now hors window. Positions ouvertes → contribution nulle.
+  const closedContrib = (t: number) => {
+    let pnl = 0;
+    let fees = 0;
+    let n = 0;
+    for (const p of allTimeRows) {
+      if (p.status !== "closed") continue;
+      const closedAt = Number(p.closed_at) || 0;
+      if (closedAt < t || closedAt > now) continue; // fermée DANS la fenêtre
+      n++;
+      const serie = marksByPos.get(Number(p.id)) ?? [];
+      // dernier mark STRICTEMENT avant la fenêtre (≈ état compté dans cumul(t))
+      let prevPure = 0;
+      let prevFees = 0;
+      for (let i = serie.length - 1; i >= 0; i--) {
+        if (serie[i].taken_at <= t) {
+          prevPure = serie[i].net_pnl_usd - serie[i].fees_usd;
+          prevFees = serie[i].fees_usd;
+          break;
+        }
+      }
+      const last = serie[serie.length - 1];
+      const finPure =
+        last != null
+          ? last.net_pnl_usd - last.fees_usd
+          : Number(p.last_value_usd ?? 0) - Number(p.deposit_usd ?? 0);
+      const finFees = last != null ? last.fees_usd : 0;
+      pnl += finPure - prevPure;
+      fees += finFees - prevFees;
+    }
+    return { pnl, fees, n };
+  };
   const DAY_MS = 86_400_000;
-  const progression: Record<string, { pnl: number; fees: number; profit: number }> = {};
+  type Prog = {
+    pnl: number;
+    fees: number;
+    profit: number;
+    closedN?: number;
+    closedPnl?: number;
+    closedFees?: number;
+  };
+  const progression: Record<string, Prog> = {};
   for (const [k, back] of [
     ["1D", 1],
     ["1W", 7],
@@ -328,7 +373,15 @@ export async function exportData(): Promise<string> {
     const t = now - back * DAY_MS;
     const pnl = eqNowV - equityAt(t);
     const fees = feesNowV - feesAt(t);
-    progression[k] = { pnl, fees, profit: pnl + fees };
+    const cc = closedContrib(t);
+    progression[k] = {
+      pnl,
+      fees,
+      profit: pnl + fees,
+      closedN: cc.n,
+      closedPnl: cc.pnl,
+      closedFees: cc.fees,
+    };
   }
   const ytdStart = new Date(new Date().getFullYear(), 0, 1).getTime();
   const ytdPnl = eqNowV - equityAt(ytdStart);
