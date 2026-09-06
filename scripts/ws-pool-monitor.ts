@@ -253,10 +253,32 @@ async function connect(): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ws = (conn as any)._rpcWebSocket;
   if (ws) {
-    ws.on("error", (e: Error) => log(`ws erreur: ${String(e).slice(0, 120)}`));
+    // ⚠️ BOUCLE INFERNALE 429 (incident 06/09, log ×500 Mo en ~2 h) : quand le
+    // tier ws Helius rate-limite, l'erreur de handshake ne JAMAIS suivi d'un
+    // 'close' → reconnectLoop n'était jamais appelé → backoff 1→30 s ignoré →
+    // reconnexion immédiate à chaque erreur = tempête de 429 qui auto-entretient
+    // le rate limit. Fix : compter les erreurs et piloter la reconnexion ici.
+    let wsErrors = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleReconnect = () => {
+      if (stopped || reconnecting || reconnectTimer) return;
+      const delay = Math.min(1000 * 2 ** wsErrors, 60_000); // 1s→60s max
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (!stopped && !reconnecting) void reconnectLoop();
+      }, delay);
+    };
+    ws.on("error", (e: Error) => {
+      wsErrors += 1;
+      log(`ws erreur: ${String(e).slice(0, 120)} (reconnexion dans ${Math.min(1000 * 2 ** wsErrors, 60_000) / 1000}s)`);
+      scheduleReconnect();
+    });
+    ws.on("open", () => {
+      wsErrors = 0; // connexion saine — on remet l'escalade à zéro
+    });
     ws.on("close", () => {
       log("ws déconnecté");
-      if (!stopped && !reconnecting) void reconnectLoop();
+      scheduleReconnect();
     });
   }
   log("connecté");
