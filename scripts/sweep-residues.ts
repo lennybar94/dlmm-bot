@@ -194,8 +194,11 @@ for (const wt of walletTokens) {
     // → quand le tier ws Helius sature (429), elle expire à 30 s alors que la
     // tx passe on-chain → fausses alertes 🚨 "SWEEP ÉCHOUÉ" (4× en 2 j :
     // fone/REDACTED/MANLET/BULLSHIT, toutes passées). Polling getSignatureStatus
-    // : 1,5 s, timeout 60 s.
-    const confDeadline = Date.now() + 60_000;
+    // : 1,5 s. Timeout porté 60→120 s (go David 12/09) : réseau chargé = tx
+    // confirmée après 60-90 s (ZCAT/BUTTHOLE/EMBER en 48 h, tous repassés au
+    // tick suivant) — 120 s absorbe ces retards sans jamais doubler un swap
+    // (le retry ne part QUE si cette boucle a levé, donc statut inconnu ≠ succès).
+    const confDeadline = Date.now() + 120_000;
     let confStatus: { confirmationStatus?: string; err?: unknown } | null = null;
     for (;;) {
       const st = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
@@ -204,7 +207,7 @@ for (const wt of walletTokens) {
       if (confStatus?.confirmationStatus === "confirmed" || confStatus?.confirmationStatus === "finalized") break;
       if (Date.now() > confDeadline) {
         throw new Error(
-          `confirmation timeout 60s (sig ${sig.slice(0, 12)}… — dernier statut ${confStatus ? confStatus.confirmationStatus : "inconnu"})`
+          `confirmation timeout 120s (sig ${sig.slice(0, 12)}… — dernier statut ${confStatus ? confStatus.confirmationStatus : "inconnu"})`
         );
       }
       await new Promise((r) => setTimeout(r, 1500));
