@@ -101,6 +101,28 @@ export const config = {
   // 31/08 — preuve : open-paper */5 re-consommait toute marge <5 min) : la
   // part dynamique scale avec les top-ups.
   trendSleeveShare: num("TREND_SLEEVE_SHARE", 0.4),
+  // ─── Manche tendance L4-B « étendue » v2 (2026-09-14) ───────────────────
+  // Le pilote était FLAT (+1,9$ net sur 11 closes) pour DEUX fuites trouvées
+  // par contre-factuel mark à mark, pas par intuition :
+  //  1) TP — les 6 gagnantes se refermaient à +13/+22$ via cooling-off, mais 2
+  //     avaient d'abord dépassé +20$ avant de rendre la mise (HYPE 2 : +22,9 →
+  //     −18,8 ; CATE : +32,2 → +13,8). Sans TP : +1,9$. Avec TP +20$ : +120,3$.
+  //     Plateau mesuré +25$ (+137,9$) / +30$ (+142,3$) → seuil conservateur
+  //     +20$ retenu (les closes réelles se groupent à +13/+22$).
+  //  2) anti-ré-entrée — 4 tokens rejoués sur 11 closes ; les 3 ré-entrées ≤ 7 j
+  //     ont coûté −49,6$ net. Fenêtre 14 j (attrape aussi cbBTC rejoué à 9 j,
+  //     −13,4$) : +144,4$ combinée au TP.
+  // Réservés AU PILOTE : le book memes sort par recovery/cooling-off (doctrine
+  // fees +++), jamais par un plafond de gain.
+  pilotTakeProfitUsd: num("PILOT_TAKE_PROFIT_USD", 20),
+  pilotReentryCooldownDays: num("PILOT_REENTRY_COOLDOWN_DAYS", 14),
+  // Palier de mise « major » (classe conviction du sizing satsmonkes) : TVL ≥
+  // 500k$ ET vol24h ≥ 5M$ → 1 000$ au lieu de 500$. 8 pools distincts de ce
+  // type sur 14 j (MET, ZEC, JUP, HYPE…). La garde de manche (0.8×share×total
+  // ≈ 8,85 SOL aujourd'hui) borne toujours : 1 major + 1 standard tiennent.
+  pilotUsdMajor: num("PILOT_USD_MAJOR", 1_000),
+  pilotMajorMinTvl: num("PILOT_MAJOR_MIN_TVL", 500_000),
+  pilotMajorMinVolume24h: num("PILOT_MAJOR_MIN_VOLUME_24H", 5_000_000),
   // Plafond de mise par position en mode RÉEL (décision David 2026-08-24,
   // réévalué 2026-08-25) : le sizing satsmonkes par classe (500/1000/2000$) est
   // calibré pour un capital 5-10k$. Avec 13.29 SOL il fallait un sizing RELATIF

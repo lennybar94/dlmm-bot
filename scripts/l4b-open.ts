@@ -36,17 +36,26 @@ const MIN_POOL_AGE_DAYS = 7;
 const MIN_TVL_USD = 100_000;
 const MIN_VOL24H_USD = 1_000_000;
 const MAX_ENTRY_RSI = 70; // pas de blow-off (même garde que bidask-dip)
+const PILOT_USD_STANDARD = 500; // mise par défaut (classe exploratoire satsmonkes)
+// Anti-ré-entrée manche tendance : fenêtre lue depuis la config (défaut 14 j).
+// Contre-factuel 14/09 sur les 11 closes du pilote : 4 tokens rejoués, dont 3
+// ré-entrées ≤ 7 j coûtant −49,6$ net (HYPE 2 −18,8 / ANSEM 2 −50,9 / gain
+// ANTHROPIC 2 manqué +20,1) + cbBTC rejoué à 9 j (−13,4$) attrapé par 14 j.
+const PILOT_REENTRY_DAYS = config.pilotReentryCooldownDays;
 
 const args = process.argv.slice(2);
 const pick = args.find((a) => a.startsWith("--pick="))?.split("=")[1] ?? "";
-const usd = parseFloat(args.find((a) => a.startsWith("--usd="))?.split("=")[1] ?? "500");
+const usdArg = args.find((a) => a.startsWith("--usd="))?.split("=")[1];
+// NaN = pas de --usd → palier AUTOMATIQUE décidé après le fetch du pool
+// (major 1 000$ / standard 500$). Un --usd explicite reste souverain.
+let usd = usdArg !== undefined ? parseFloat(usdArg) : NaN;
 const send = args.includes("--confirm=REAL-OPEN");
 
 if (!pick) {
   console.error("⛔ --pick=<pool_addr> requis.");
   process.exit(1);
 }
-if (!(usd >= 100 && usd <= 1000)) {
+if (!Number.isNaN(usd) && !(usd >= 100 && usd <= 1000)) {
   console.error("⛔ --usd doit être entre 100 et 1000 (pilote petit capital).");
   process.exit(1);
 }
@@ -57,6 +66,12 @@ const candles = await fetchOhlcv(pick);
 const vol = realizedVolatility(candles);
 const trend = analyzeTrend(candles);
 const yUsd = estimateYUsd(p);
+// Palier de mise automatique (L4-B « étendue » v2, 2026-09-14) : classe
+// « major » du sizing satsmonkes (TVL ≥ 500k$ ET vol24h ≥ 5M$) → 1 000$ ;
+// sinon 500$ (classe exploratoire). La garde de manche ci-dessous borne
+// toujours le total (0.8 × TREND_SLEEVE_SHARE × total SOL).
+const isMajor = p.tvl >= config.pilotMajorMinTvl && p.volume_24h >= config.pilotMajorMinVolume24h;
+if (Number.isNaN(usd)) usd = isMajor ? config.pilotUsdMajor : PILOT_USD_STANDARD;
 const depositY = usd / yUsd;
 const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
 const hint = buildStrategyHint(p, activeBinId, vol, "spot-spread", p.current_price, candles);
@@ -81,6 +96,25 @@ console.log(`TVL ${Math.round(p.tvl)}$ · vol24h ${Math.round(p.volume_24h)}$ ·
 console.log(`Tendance : drift24h ${trend.drift24h !== null ? (trend.drift24h * 100).toFixed(1) + "%" : "n/a"} · RSI ${trend.rsiNow?.toFixed(0) ?? "n/a"}${trend.rsiRising ? " ↗" : trend.rsiNow !== null ? " ↘" : ""} · ${trend.priceAboveSma === null ? "MA7 n/a" : trend.priceAboveSma ? "prix > MA7" : "prix < MA7"}`);
 
 // --- Critères durs (spec section 4 — sélection humaine mais gardes bloquantes) ---
+// Anti-ré-entrée (L4-B v2, 14/09) : toute tentative pilote sur ce TOKEN dans la
+// fenêtre bloque une nouvelle entrée — la concentration est le vrai risque de
+// cette manche (27 pools conformes seulement sur 14 j, dont MET/cbBTC/HYPE/JUP
+// reviennent à chaque scan).
+const symXCmp = (p.token_x.symbol ?? "").toLowerCase();
+const priorPilot =
+  symXCmp.length > 0
+    ? (db
+        .prepare(
+          `SELECT id, datetime(opened_at/1000,'unixepoch','localtime') AS d, status, close_reason
+           FROM real_positions
+           WHERE pilot=1 AND LOWER(COALESCE(token_x_symbol,''))=?
+             AND opened_at > ? ORDER BY opened_at DESC LIMIT 1`
+        )
+        .get(symXCmp, Date.now() - PILOT_REENTRY_DAYS * 86_400_000) as
+        | { id: number; d: string; status: string; close_reason: string | null }
+        | undefined)
+    : undefined;
+
 const checks: { label: string; ok: boolean; detail: string }[] = [
   { label: "âge ≥ 7 j", ok: p.pool_age_days >= MIN_POOL_AGE_DAYS, detail: `${p.pool_age_days.toFixed(1)} j` },
   { label: "TVL ≥ 100k$", ok: p.tvl >= MIN_TVL_USD, detail: `${Math.round(p.tvl)}$` },
@@ -88,6 +122,13 @@ const checks: { label: string; ok: boolean; detail: string }[] = [
   { label: "pas de tendance baissière confirmée", ok: !trend.downTrend, detail: trend.downTrend ? "downTrend (drift<0, RSI↘, prix<MA7)" : "OK" },
   { label: "RSI < 70 (pas de blow-off)", ok: trend.rsiNow === null || trend.rsiNow < MAX_ENTRY_RSI, detail: trend.rsiNow?.toFixed(0) ?? "n/a" },
   { label: "token non blacklisté", ok: !isTokenBlacklisted(p.token_x.symbol ?? p.name), detail: isTokenBlacklisted(p.token_x.symbol ?? p.name) ? "blacklisté/cooldown" : "OK" },
+  {
+    label: `aucune tentative pilote sur ce token depuis ${PILOT_REENTRY_DAYS} j`,
+    ok: !priorPilot,
+    detail: priorPilot
+      ? `#${priorPilot.id} ouverte le ${priorPilot.d} (${priorPilot.status === "open" ? "encore ouverte" : priorPilot.close_reason ?? "close"})`
+      : "OK",
+  },
 ];
 let hardFail = false;
 for (const c of checks) {

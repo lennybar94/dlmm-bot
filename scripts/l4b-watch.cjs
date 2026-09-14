@@ -30,6 +30,16 @@ try {
   const inPos = new Set(db.prepare("SELECT pool_address FROM real_positions WHERE status='open'").all().map(r => r.pool_address));
   const now = Date.now();
   const bl = new Set(db.prepare('SELECT token_key, until FROM token_blacklist').all().filter(b => !b.until || b.until > now).map(b => b.token_key.toLowerCase()));
+  // Anti-ré-entrée manche tendance (L4-B « étendue » v2, 14/09) : un token déjà
+  // joué en pilote dans la fenêtre n'est MÊME PAS présenté au décideur. Sans ce
+  // filtre, MET/cbBTC/HYPE/JUP reviennent à chaque scan et le décideur rejoue le
+  // même token (4 tokens rejoués sur 11 closes ; 3 ré-entrées ≤7 j = −49,6$ net).
+  const REENTRY_DAYS = Number(process.env.PILOT_REENTRY_COOLDOWN_DAYS || 14);
+  const recentPilotTokens = new Set(
+    db.prepare(`SELECT DISTINCT LOWER(token_x_symbol) t FROM real_positions
+      WHERE pilot=1 AND token_x_symbol IS NOT NULL AND opened_at > ?`)
+      .all(now - REENTRY_DAYS * 86400000).map(r => r.t)
+  );
 
   let notified = {};
   try { notified = JSON.parse(fs.readFileSync(NOTIFIED_PATH, 'utf8')); } catch {}
@@ -46,6 +56,7 @@ try {
     if (symY !== 'sol' && symY !== 'wsol') continue;
     if (inPos.has(r.pool_address)) continue;
     if (bl.has((r.token_x_symbol || '').toLowerCase())) continue;
+    if (recentPilotTokens.has((r.token_x_symbol || '').toLowerCase())) continue; // anti-ré-entrée L4-B v2
     const age = r.pool_age_days ?? 0, tvl = r.tvl ?? 0, vol = r.volume_24h ?? 0;
     const fails = [];
     if (age < 7) fails.push(`âge ${Math.round(age)} j < 7 j`);
@@ -66,17 +77,19 @@ try {
 
   const lines = [];
   for (const r of ok) {
+    const major = (r.tvl ?? 0) >= 500000 && (r.volume_24h ?? 0) >= 5000000;
     lines.push(`🎯 PILOTE L4-B : candidat CONFORME — ${r.token_x_symbol}-${r.token_y_symbol}`);
     lines.push(`Pool : ${r.pool_address}`);
-    lines.push(`TVL ${Math.round((r.tvl ?? 0) / 1000)}k$ · vol24h ${Math.round((r.volume_24h ?? 0) / 1000)}k$ · âge ${Math.round(r.pool_age_days ?? 0)} j · tendance ✓`);
-    lines.push(`Ouverture (décideur auto) : cd /home/polybot/dlmm-bot && npx tsx scripts/l4b-open.ts --pick=${r.pool_address} --usd=500 --confirm=REAL-OPEN`);
+    lines.push(`TVL ${Math.round((r.tvl ?? 0) / 1000)}k$ · vol24h ${Math.round((r.volume_24h ?? 0) / 1000)}k$ · âge ${Math.round(r.pool_age_days ?? 0)} j · tendance ✓${major ? " · ⭐ MAJOR (mise 1 000$)" : " · mise 500$"}`);
+    lines.push(`Ouverture (décideur auto) : cd /home/polybot/dlmm-bot && npx tsx scripts/l4b-open.ts --pick=${r.pool_address} --confirm=REAL-OPEN`);
+    lines.push(`(pas de --usd : palier automatique 500$ / 1 000$ major · TP +20$ et anti-ré-entrée 14 j actifs)`);
   }
   for (const { r, fails } of near) {
     lines.push(`👀 PILOTE L4-B : PRESQUE conforme — ${r.token_x_symbol}-${r.token_y_symbol}`);
     lines.push(`Pool : ${r.pool_address}`);
     lines.push(`TVL ${Math.round((r.tvl ?? 0) / 1000)}k$ · vol24h ${Math.round((r.volume_24h ?? 0) / 1000)}k$ · âge ${Math.round(r.pool_age_days ?? 0)} j · tendance ✓`);
     lines.push(`Critère manquant : ${fails.join(' · ')}`);
-    lines.push(`Valider (dry-run) : cd /home/polybot/dlmm-bot && npx tsx scripts/l4b-open.ts --pick=${r.pool_address} --usd=500`);
+    lines.push(`Valider (dry-run) : cd /home/polybot/dlmm-bot && npx tsx scripts/l4b-open.ts --pick=${r.pool_address}`);
   }
   console.log(lines.join('\n'));
 } catch {

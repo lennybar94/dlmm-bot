@@ -532,6 +532,30 @@ export async function realMonitor(): Promise<number> {
       }
     }
 
+    // 6.5) TAKE-PROFIT MANCHE TENDANCE (L4-B étendue v2, 2026-09-14). Réservé
+    //      aux positions pilote (pilot=1) : le book memes sort par
+    //      recovery-exit/cooling-off (doctrine fees +++), jamais par un plafond
+    //      de gain.
+    //      Contre-factuel mark à mark des 11 closes du pilote : 6 gagnantes
+    //      refermées à +13/+22$ via cooling-off, dont 2 avaient dépassé +20$
+    //      AVANT de rendre la mise (HYPE 2 : +22,9 → −18,8 ; CATE : +32,2 →
+    //      +13,8). Réel +1,9$ → TP +20$ : +120,3$. Plateau +25/+30$ :
+    //      +137,9$/+142,3$ → seuil conservateur +20$ (les closes réelles se
+    //      groupent à +13/+22$), ajustable par PILOT_TAKE_PROFIT_USD.
+    if (pos.pilot && netPnlUsd >= config.pilotTakeProfitUsd) {
+      const detail = `objectif manche tendance atteint (${netPnlUsd.toFixed(1)}$ ≥ ${config.pilotTakeProfitUsd}$, dont fees ${feesUsd.toFixed(2)}$)`;
+      if (config.realExitAuto) {
+        const m = await autoClose(pos, "take-profit", detail, netPnlUsd, valueUsd, creds);
+        if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
+        alerts++;
+        continue; // fermée (ou échec traité) — rien d'autre ce tick
+      }
+      if (Date.now() - lastAlertAt(pos.id, "real-take-profit") > ALERT_COOLDOWN_MS) {
+        logEvent("real-take-profit", `🎯 ${pos.name} : ${detail} — prendre le gain ? ${killCmd}`, pos.id, pos.pool_address);
+        alerts++;
+      }
+    }
+
     // 7) Momentum refroidi (RocketScan, 2026-08-23) : miroir de l'exit paper
     //    « cooling off » (déclin du delta de volume : intervalle courant <
     //    COOLING_RATIO × pic des 30 dernières minutes) — topblast et
