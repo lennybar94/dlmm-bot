@@ -102,11 +102,18 @@ async function autoClose(
     // cours ; le cron open:paper ré-ouvrirait le même token dans l'heure).
     // Le 48h vol ci-dessous écrase si déclenché (cas le plus strict gagne).
     const reopenKey = String(pos.token_x_symbol ?? pos.name ?? "?").toLowerCase();
+    // Livre principale : garde anti-ré-entrée 14 j alignée sur le pilote
+    // (simulation 2026-09-15 : -1 900 -> -845$ ; la garde 6 h ne filtrait rien,
+    // médiane réelle des ré-entrées = 0,5 j). Les closes take-profit gardent
+    // la fenêtre courte (on rejoue un gagnant, doctrine L4-B TP ≠ poison).
+    const reopenHours = pos.pilot || reason === "take-profit"
+      ? config.tokenReopenCooldownHours
+      : config.pilotReentryCooldownDays * 24;
     if (isBlacklistableToken(reopenKey)) {
       blacklistToken(
         reopenKey,
-        config.tokenReopenCooldownHours,
-        `cooldown ré-ouverture après close ${reason}`,
+        reopenHours,
+        `cooldown ré-ouverture (${reopenHours}h) après close ${reason}`,
         String(pos.pool_address)
       );
     }
@@ -542,8 +549,9 @@ export async function realMonitor(): Promise<number> {
     //      +13,8). Réel +1,9$ → TP +20$ : +120,3$. Plateau +25/+30$ :
     //      +137,9$/+142,3$ → seuil conservateur +20$ (les closes réelles se
     //      groupent à +13/+22$), ajustable par PILOT_TAKE_PROFIT_USD.
-    if (pos.pilot && netPnlUsd >= config.pilotTakeProfitUsd) {
-      const detail = `objectif manche tendance atteint (${netPnlUsd.toFixed(1)}$ ≥ ${config.pilotTakeProfitUsd}$, dont fees ${feesUsd.toFixed(2)}$)`;
+    const tpThreshold = pos.pilot ? config.pilotTakeProfitUsd : config.bookTakeProfitUsd;
+    if (netPnlUsd >= tpThreshold) {
+      const detail = `${pos.pilot ? "objectif manche tendance" : "take-profit livre"} atteint (${netPnlUsd.toFixed(1)}$ ≥ ${tpThreshold}$, dont fees ${feesUsd.toFixed(2)}$)`;
       if (config.realExitAuto) {
         const m = await autoClose(pos, "take-profit", detail, netPnlUsd, valueUsd, creds);
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);

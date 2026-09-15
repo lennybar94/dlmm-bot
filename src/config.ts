@@ -116,6 +116,16 @@ export const config = {
   // fees +++), jamais par un plafond de gain.
   pilotTakeProfitUsd: num("PILOT_TAKE_PROFIT_USD", 20),
   pilotReentryCooldownDays: num("PILOT_REENTRY_COOLDOWN_DAYS", 14),
+  // Take-profit BOOK PRINCIPAL (bidask-dip) — décision David 2026-09-15 après
+  // simulation sur les 240 positions réelles : baseline -1 900$ → TP+10$ +271$,
+  // seul seuil positif dans les DEUX moitiés OOS (+107/+164). Entry-drift +2
+  // marks le ramène à +16$ : c'est un coupe-perte déguisé (38% des perdantes
+  // ont touché >=+10$ avant de sombrer), pas un edge de profit. Plateau
+  // +15/+20 nettement moins robuste → seuil bas retenu.
+  bookTakeProfitUsd: num("BOOK_TAKE_PROFIT_USD", 10),
+  // Anti-ré-entrée GLOBALE (fenêtre 14j comme le pilote) : 184 ré-entrées du
+  // book sur 240 trades, médiane 0,5j — la garde 6h existante ne filtre rien
+  // (seules 4 étaient <=6h). Simulation : -1 900 -> -845$ à elle seule.
   // Palier de mise « major » (classe conviction du sizing satsmonkes) : TVL ≥
   // 500k$ ET vol24h ≥ 5M$ → 1 000$ au lieu de 500$. 8 pools distincts de ce
   // type sur 14 j (MET, ZEC, JUP, HYPE…). La garde de manche (0.8×share×total

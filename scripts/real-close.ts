@@ -90,11 +90,15 @@ for (const t of targets) {
         .prepare(`SELECT token_x_symbol FROM real_positions WHERE id = ?`)
         .get(t.id) as { token_x_symbol: string | null } | undefined;
       const reopenKey = (row?.token_x_symbol ?? "").toLowerCase();
+      const isPilotRow = db.prepare(`SELECT pilot FROM real_positions WHERE id = ?`).get(t.id) as { pilot: number | null } | undefined;
+      const reopenHours = isPilotRow?.pilot
+        ? config.tokenReopenCooldownHours
+        : config.pilotReentryCooldownDays * 24;
       if (reopenKey && isBlacklistableToken(reopenKey)) {
         blacklistToken(
           reopenKey,
-          config.tokenReopenCooldownHours,
-          "cooldown ré-ouverture après close manuel",
+          reopenHours,
+          `cooldown ré-ouverture (${reopenHours}h) après close manuel`,
           t.pool
         );
       }
