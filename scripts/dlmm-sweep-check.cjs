@@ -3,7 +3,7 @@ const { Connection, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const fs = require('fs');
 const env = fs.readFileSync('.env', 'utf8');
 const rpc = (env.match(/^SOLANA_RPC_URL=(.+)$/m) || [])[1]?.trim().replace(/^"|"$/g, '');
-const wallet = 'HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk';
+const wallet = 'HsstWQzA65Zh2DKJTfWP5zkDLaZUi49UrJpbjku2w3az';
 const BULLSHIT_MINT = 'zj1jpp7QvUqQ8e8zGx2T9iXqWY9k5zR3mN7sL4pQ2vXo'; // placeholder, remplacé en base
 
 const conn = new Connection(rpc, 'confirmed');

@@ -14,7 +14,7 @@ const { BN } = require("bn.js");
 const POOL = new PublicKey("3jD79NNgy7NZfNhAkMveq42rL8T3Ho1Mqtq1wmEt5W8K"); // omo-SOL
 const OMO_MINT = new PublicKey("94Sm8joZMSRzpQmcNVn5zZpgnRLN2DBesJYDXwuNpump");
 const SOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
-const PILOT = "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk";
+const PILOT = config.walletAddress;
 const SLIPPAGE_BPS = 500; // 5 % max (meme à liquidité fine)
 
 const hasConfirm = process.argv.includes("--confirm=SELL-OMO");

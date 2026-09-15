@@ -5,7 +5,7 @@ const fs = require('fs');
 
 const env = fs.readFileSync('.env', 'utf8');
 const rpc = (env.match(/^SOLANA_RPC_URL=(.+)$/m) || [])[1]?.trim().replace(/^"|"$/g, '');
-const wallet = (env.match(/^WALLET_ADDRESS=(.+)$/m) || [])[1]?.trim().replace(/^"|"$/g, '') || 'HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk';
+const wallet = (env.match(/^WALLET_ADDRESS=(.+)$/m) || [])[1]?.trim().replace(/^"|"$/g, '') || 'HsstWQzA65Zh2DKJTfWP5zkDLaZUi49UrJpbjku2w3az';
 
 const db = new Database('data/dlmm-bot.db', { readonly: true });
 

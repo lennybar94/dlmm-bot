@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Vérifie les 2 positions omo rouvertes (solde x2 + comptes on-chain + DB).
 set -euo pipefail
-W=HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk
+W=HsstWQzA65Zh2DKJTfWP5zkDLaZUi49UrJpbjku2w3az
 echo "=== solde natif (x2) ==="
 for i in 1 2; do
   curl -s --max-time 15 -X POST https://api.mainnet-beta.solana.com -H "Content-Type: application/json" \

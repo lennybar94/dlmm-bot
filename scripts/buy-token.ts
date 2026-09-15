@@ -15,7 +15,7 @@ const require = createRequire(import.meta.url);
 const { Keypair, PublicKey, Connection } = require("@solana/web3.js") as any;
 
 const DATA_API = "https://dlmm.datapi.meteora.ag";
-const PILOT = "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk";
+const PILOT = config.walletAddress;
 const SLIPPAGE_BPS = 500;
 
 const args = process.argv.slice(2);

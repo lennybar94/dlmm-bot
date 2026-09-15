@@ -3,7 +3,7 @@ const Database = require('better-sqlite3');
 const { Connection, PublicKey } = require('@solana/web3.js');
 require('dotenv').config();
 
-const WALLET = 'HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk';
+const WALLET = process.env.WALLET_ADDRESS || 'HsstWQzA65Zh2DKJTfWP5zkDLaZUi49UrJpbjku2w3az';
 const db = new Database('data/dlmm-bot.db', { readonly: true });
 
 const now = new Date();

@@ -15,7 +15,7 @@ import type { OpportunityScore, PaperPositionRow, StrategyHint } from "../src/ty
 import { Connection, Keypair } from "@solana/web3.js";
 
 // Wallet pilote du bot (garde de clé — le .env doit porter CETTE clé).
-const PILOT = "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk";
+const PILOT = config.walletAddress;
 
 const args = process.argv.slice(2);
 const limitArg = args.find((a) => a.startsWith("--limit="));

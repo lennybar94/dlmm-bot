@@ -20,7 +20,7 @@ const { BN } = require("bn.js") as any;
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 const DATA_API = "https://dlmm.datapi.meteora.ag";
-const PILOT = "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk";
+const PILOT = config.walletAddress;
 const dryRun = process.argv.includes("--dry-run");
 
 // Log horodaté (audit 24/08) — le log cron sweep.log était illisible sans timestamp.

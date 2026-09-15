@@ -7,7 +7,7 @@ const env = Object.fromEntries(
     .map(l => { const i = l.indexOf('='); return [l.slice(0, i).trim(), l.slice(i + 1).trim()]; })
 );
 const rpc = env.SOLANA_RPC_URL;
-const wallet = env.WALLET_ADDRESS || 'HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk';
+const wallet = env.WALLET_ADDRESS || 'HsstWQzA65Zh2DKJTfWP5zkDLaZUi49UrJpbjku2w3az';
 
 const db = new Database('data/dlmm-bot.db', { readonly: true });
 // sigs connues: positions (open/close) + events (sweeps/claims/opens...)

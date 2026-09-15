@@ -29,7 +29,7 @@ const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { Keypair, PublicKey, Connection } = require("@solana/web3.js") as any;
 
-const PILOT = "HE48NngQ46ZmgNMphNwEwxmLxK8D5gmcfd3bPqgeNoVk";
+const PILOT = config.walletAddress;
 const MINT_RESERVE_PCT = 0.02; // marge slippage sur l'achat (2 %)
 const FEE_BUF_SOL = 0.1; // frais de tx (2 swaps + ouverture)
 const MIN_POOL_AGE_DAYS = 7;
