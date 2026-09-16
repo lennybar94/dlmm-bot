@@ -5,6 +5,24 @@
 import { db } from "./db.js";
 import { getRules, getRuleChanges } from "./rules.js";
 import { getSolPriceUsd } from "./export.js";
+import { execFileSync } from "node:child_process";
+
+// Réconciliation wallet (ajout 16/09) : les pertes de résidus memcoins et la
+// dérive USD du wallet ne sont visibles NI dans net_pnl (DB) NI dans le Share
+// PnL Jupiter → une ligne « Wallet » avec SOL libre + $ qui dorment en tokens
+// non-sweepés. Best-effort : l'échec du script ne casse pas le rapport.
+function walletRecon(): string | null {
+  try {
+    const out = execFileSync("node", ["scripts/wallet-reconcile.cjs"], {
+      cwd: process.cwd(), encoding: "utf8", timeout: 90_000,
+    }).trim().split("\n").pop() ?? "";
+    const j = JSON.parse(out);
+    const top = (j.residues || []).slice(0, 4).map((r: any) => `${r.sym} ${r.val.toFixed(0)}$`).join(", ");
+    return `  SOL libre ${j.sol_free.toFixed(2)} · résidus non-sweepés ${j.residue_usd.toFixed(2)}$${top ? ` (${top})` : ""}${j.sweep_fails_24h ? ` · ⚠️ ${j.sweep_fails_24h} sweep(s) échoué(s) 24h` : ""}`;
+  } catch {
+    return null;
+  }
+}
 
 export async function buildDailyReport(): Promise<string> {
   const lines: string[] = [];
@@ -181,6 +199,11 @@ export async function buildDailyReport(): Promise<string> {
     lines.push(
       `GLOBAL : ${gClosed} closes (${gWins} gains / ${gClosed - gWins} pertes) · réalisé ${sgn(gRealized)} + flottant ${sgn(gOpen)} → ${tag(gPnl)} TOTAL ${sgn(gPnl)} · fees ${gFees.toFixed(1)}$ · ${gSol.toFixed(2)} SOL déployés`
     );
+  }
+  const recon = walletRecon();
+  if (recon) {
+    lines.push("Wallet (réconciliation Jupiter) :");
+    lines.push(recon);
   }
   lines.push("");
 
