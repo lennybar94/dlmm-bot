@@ -12,6 +12,7 @@
     "real:close": "tsx scripts/real-close.ts",
     "real:shadow": "tsx scripts/real-shadow.ts",
     "real:monitor": "tsx scripts/real-monitor.ts",
+    "scan:only": "tsx scripts/scan-only.ts",
     "monitor": "tsx scripts/monitor.ts",
     "accel:monitor": "tsx scripts/accel-monitor.ts",
     "report:daily": "tsx scripts/report-daily.ts",
