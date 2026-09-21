@@ -25,7 +25,8 @@
     "notify:events": "tsx scripts/notify-events.ts",
     "notify:report": "tsx scripts/notify-report.ts",
     "sell:omo": "tsx scripts/sell-omo.ts",
-    "sweep:residues": "tsx scripts/sweep-residues.ts"
+    "sweep:residues": "tsx scripts/sweep-residues.ts",
+    "stats:line": "tsx scripts/stats-line.ts"
   },
   "dependencies": {
     "@meteora-ag/dlmm": "^1.4.1",

@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import dns from "node:dns";
 
 function readEnvFile(file: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -65,13 +66,17 @@ export async function periodStatsLine(): Promise<string | null> {
       | Record<string, { pnl?: number; fees?: number; profit?: number }>
       | undefined;
     if (prog) {
-      const parts = ["1D", "1W", "1M", "1Y", "ALL"]
+      // UNE LIGNE PAR DURÉE (demande David 21/09) :
+      //   📊 PnL / fees / profit par période
+      //   1D  -10$ / +42$ / +32$
+      //   1W  …
+      const rows = ["1D", "1W", "1M", "1Y", "ALL"]
         .filter((k) => prog[k])
         .map((k) => {
           const p = prog[k];
-          return `${k} ${signed(p.pnl ?? 0)}/${signed(p.fees ?? 0)}/${signed(p.profit ?? 0)}`;
+          return `${k.padEnd(3)} ${signed(p.pnl ?? 0)}$ / ${signed(p.fees ?? 0)}$ / ${signed(p.profit ?? 0)}$`;
         });
-      if (parts.length) line = `📊 PnL/Fees/Profit — ${parts.join(" · ")}`;
+      if (rows.length) line = ["📊 PnL / fees / profit par période", ...rows].join("\n");
     }
   } catch {
     line = null; // RPC saturé, dashboard indisponible… l'alerte part sans les stats
@@ -80,24 +85,54 @@ export async function periodStatsLine(): Promise<string | null> {
   return line;
 }
 
+// api.telegram.org se résout en IPv6 depuis ce host et le connect timeout est
+// intermittent (même cause que le NODE_OPTIONS=ipv4first de scripts/dlmm-run.sh).
+// On le force ici aussi : un envoi lancé à la main (tsx, node -e, script ad hoc)
+// doit être aussi fiable qu'un envoi lancé par le launcher.
+dns.setDefaultResultOrder("ipv4first");
+
 export async function sendTelegram(token: string, chatId: string, text: string): Promise<boolean> {
   try {
     let body = text;
     const line = await periodStatsLine();
     if (line) {
       const MAX = 4000; // limite Telegram 4096 — on garde de la marge
+      // Collée sous le message, sans ligne vide : les stats tiennent sur UNE ligne.
       body =
-        body.length + line.length + 2 > MAX
-          ? `${body.slice(0, Math.max(0, MAX - line.length - 4))}…\n\n${line}`
-          : `${body}\n\n${line}`;
+        body.length + line.length + 1 > MAX
+          ? `${body.slice(0, Math.max(0, MAX - line.length - 3))}…\n${line}`
+          : `${body}\n${line}`;
     }
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: body, disable_web_page_preview: true }),
-    });
+    const post = () =>
+      fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: body, disable_web_page_preview: true }),
+      });
+    let res = await post();
+    if (!res.ok) {
+      // Trace utile quand un envoi tombe (quota, chat invalide, message trop long…).
+      console.error(`[telegram] envoi refusé HTTP ${res.status} : ${(await res.text()).slice(0, 200)}`);
+      // Un 429 vaut un nouvel essai (5xx aussi) — sinon on perd l'alerte.
+      if (res.status === 429 || res.status >= 500) {
+        await new Promise((r) => setTimeout(r, 2000));
+        res = await post();
+      }
+    }
     return res.ok;
-  } catch {
-    return false;
+  } catch (e) {
+    // Réseau : un seul retry, une alerte perdue coûte plus qu'un doublon possible.
+    try {
+      await new Promise((r) => setTimeout(r, 1500));
+      const retry = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+      });
+      return retry.ok;
+    } catch (e2) {
+      console.error(`[telegram] envoi impossible : ${(e as Error).message} / retry: ${(e2 as Error).message}`);
+      return false;
+    }
   }
 }
