@@ -165,7 +165,12 @@ export const config = {
   // réalisé qu'en cash — un résidu token peut dumper -41% en une nuit).
   // Après un close, les tokens résiduels du wallet (hors positions ouvertes)
   // sont swappés en SOL si leur valeur ≥ RESIDUE_SWAP_MIN_USD.
-  residueSwapMinUsd: num("RESIDUE_SWAP_MIN_USD", 15),
+  // Seuil de valeur pour swapper un résidu → SOL. Abaissé 15 → 5 $ le 21/09 :
+  // avec le fallback pool `pilot_inventory` du sweep, les résidus anciens sont
+  // désormais trouvables, et un seuil à 15 $ laissait dormir des soldes de 1 à
+  // 5 $ pendant des semaines (8,66 $ retrouvés le 21/09). 5 $ reste au-dessus du
+  // bruit de poussière qu'on ne veut pas payer en slippage.
+  residueSwapMinUsd: num("RESIDUE_SWAP_MIN_USD", 5),
   residueSwapSlippageBps: num("RESIDUE_SWAP_SLIPPAGE_BPS", 500), // 5 % max
   residueSwapCooldownMin: num("RESIDUE_SWAP_COOLDOWN_MIN", 30), // par token
 

@@ -78,6 +78,22 @@ for (const cp of closedPools) {
   }
 }
 
+// 1bis) Fallback pour les résidus ANCIENS (21/09) : les pools des positions
+// closes < 48h ne couvrent pas un jeton qui dort depuis des semaines — reste
+// d'inventaire pilote L4-B (HYPE 98sMhvDw, 9,12$ bloqués au 21/09) ou token
+// reçu lors d'un swap de close old. Sans ce fallback ils restaient « token
+// inconnu » à vie. `pilot_inventory` garde le mapping mint → pool de chaque
+// achat L4-B : on le réutilise (additif : n'écrase aucun pool déjà trouvé).
+const invPools = db
+  .prepare(
+    `SELECT DISTINCT mint, pool_address, symbol FROM pilot_inventory
+     WHERE pool_address IS NOT NULL`
+  )
+  .all() as { mint: string; pool_address: string; symbol: string | null }[];
+for (const r of invPools) {
+  if (!mintMap.has(r.mint)) mintMap.set(r.mint, { pool: r.pool_address, symbol: r.symbol ?? "?" });
+}
+
 // 2) Tokens du wallet (hors SOL) avec solde > 0.
 // ⚠️ PIÈGE INDEX RPC (découvert 24/08, LOOKSMAX) : getParsedTokenAccountsByOwner
 // filtré par programId RATE les comptes token créés récemment — l'ATA LOOKSMAX
