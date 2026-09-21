@@ -134,7 +134,13 @@ export function startDashboard(): void {
       const filePath = path.join(root, url.pathname === "/" ? "index.html" : url.pathname);
       if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
         const ext = path.extname(filePath);
-        res.writeHead(200, { "content-type": MIME[ext] ?? "application/octet-stream" });
+        // no-store sur le HTML (fix 21/09) : sans en-tête, Chrome/Firefox peuvent resservir une
+        // copie en cache après un changement de dashboard/index.html — l'utilisateur voyait
+        // l'ancienne page sans le badge SOL. Le JSON a déjà no-store ; les assets statiques
+        // lourds (s'il y en a) gardent le cache par défaut.
+        const headers: Record<string, string> = { "content-type": MIME[ext] ?? "application/octet-stream" };
+        if (ext === ".html") headers["cache-control"] = "no-store";
+        res.writeHead(200, headers);
         res.end(fs.readFileSync(filePath));
         return;
       }
