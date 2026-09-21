@@ -34,6 +34,7 @@
   }
   .badge.paper { background: var(--ink); }
   .badge.ok { background: var(--green); }
+  .badge.sol { background: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none; font-size: 12px; }
   #statusBar {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     padding: 10px 16px; margin-bottom: 20px; background: var(--card);
@@ -92,6 +93,7 @@
   <h1>DLMM <span>Bot</span></h1>
   <span class="badge paper" id="modeBadge">Paper only</span>
   <span class="badge ok" id="liveBadge">Live</span>
+  <span class="badge sol" id="solBadge" style="display:none">SOL —</span>
   <div class="meta" id="meta">…</div>
 </header>
 
@@ -236,6 +238,19 @@ function render(d) {
   $("#meta").textContent = "MAJ " + dstr(d.generated_at) + " · " + timeAgo(d.generated_at);
   updateStatus(d);
   const solPrice = d.sol_price_usd || null;
+  // Badge SOL/USD dans l'en-tête (demande 21/09) : prix déjà exporté par
+  // getSolPriceUsd() (cache 60 s), jamais un taux codé en dur. Masqué si null.
+  {
+    const sb = $("solBadge");
+    if (sb) {
+      if (solPrice != null) {
+        sb.style.display = "";
+        sb.textContent = "SOL " + usd(solPrice, 2);
+      } else {
+        sb.style.display = "none";
+      }
+    }
+  }
   const sol = (usdVal, dec = 2) =>
     solPrice && usdVal != null ? "≈ " + (usdVal / solPrice).toFixed(dec) + " SOL" : "";
   const s = d.summary;
