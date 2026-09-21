@@ -199,6 +199,22 @@ export async function buildDailyReport(): Promise<string> {
     lines.push(
       `GLOBAL : ${gClosed} closes (${gWins} gains / ${gClosed - gWins} pertes) · réalisé ${sgn(gRealized)} + flottant ${sgn(gOpen)} → ${tag(gPnl)} TOTAL ${sgn(gPnl)} · fees ${gFees.toFixed(1)}$ · ${gSol.toFixed(2)} SOL déployés`
     );
+    // Fees RÉCLAMÉES pendant la vie des positions (events real-claim) : une claim
+    // sort les fees de la position, donc elles ne sont ni dans le net des marks ni
+    // dans la ligne « fees » ci-dessus. Sans cette ligne le TOTAL sous-estime le
+    // résultat de tout ce qui a été encaissé au wallet en cours de route
+    // (1 211 $ au 21/09). Convention identique au dashboard (src/export.ts :
+    // profitAllTimeUsd = Σ net des marks + fees réclamées).
+    let gClaims = 0;
+    for (const c of db.prepare(`SELECT message FROM events WHERE type='real-claim'`).all() as {
+      message: string;
+    }[]) {
+      const m = (c.message ?? "").match(/([0-9]+\.[0-9]+)\$/);
+      if (m) gClaims += parseFloat(m[1]);
+    }
+    lines.push(
+      `  dont fees réclamées en cours de vie : ${gClaims.toFixed(1)}$ → ${tag(gPnl + gClaims)} RÉSULTAT GLOBAL (convention dashboard) ${sgn(gPnl + gClaims)}`
+    );
   }
   const recon = walletRecon();
   if (recon) {
