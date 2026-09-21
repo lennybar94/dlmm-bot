@@ -5,7 +5,12 @@ import { config } from "./config.js";
 
 fs.mkdirSync(config.dataDir, { recursive: true });
 
-const dbPath = path.join(config.dataDir, "dlmm-bot.db");
+// ⚠️ LAB : base dédiée via DLMM_DB_PATH (chemin complet, posé par lab/run.sh).
+// dotenv NE REMPLACE PAS une variable déjà présente dans process.env — run.sh
+// l'exporte AVANT de lancer node, donc le .env du lab ne peut pas l'écraser.
+const dbPath = process.env.DLMM_DB_PATH
+  ? path.resolve(process.env.DLMM_DB_PATH)
+  : path.join(config.dataDir, "dlmm-bot.db");
 export const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 

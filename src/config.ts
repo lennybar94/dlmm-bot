@@ -22,6 +22,19 @@ function bool(key: string, def: boolean): boolean {
   return raw.toLowerCase() === "true" || raw === "1";
 }
 
+// ── LAB MODE (dlmm-lab) ────────────────────────────────────────────────────
+// Un clone du bot qui tourne sur sa PROPRE base SQLite et avec ses PROPRES
+// réglages pour jouer avec les filtres sans jamais toucher la prod. Le lab est
+// verrouillé PAPER par construction : REAL_MODE forcé false + clé privée retirée
+// de l'environnement ICI (pas seulement dans le .env), donc même un script qui
+// lirait config.realMode ne peut rien ouvrir de réel depuis le lab.
+export const labMode = bool("LAB_MODE", false);
+if (labMode) {
+  process.env.REAL_MODE = "false";
+  delete process.env.REAL_CONFIRM;
+  delete process.env.WALLET_PRIVATE_KEY;
+}
+
 export const config = {
   root: path.resolve(__dirname, ".."),
   dataDir: path.resolve(__dirname, "..", "data"),
