@@ -37,12 +37,64 @@ export function getTelegramCreds(): { token: string; chatId: string } | null {
   return token && chatId ? { token, chatId } : null;
 }
 
+// ── Ligne de stats par période, ajoutée à CHAQUE alerte (demande David 21/09) ──
+// PnL / Fees / Profit sur 1D, 1W, 1M, 1Y, ALL. Source unique : src/export.ts
+// (`real.progression`, la table du dashboard) — surtout PAS une requête SQL
+// parallèle, qui divergerait de la convention unifiée le 21/09.
+// Garde-fous : calcul en cache 60 s, plafonné à 4 s, toute erreur = pas de ligne.
+// Une alerte ne doit jamais être retenue, tronquée ou perdue à cause des stats.
+let statsCache: { at: number; line: string | null } = { at: 0, line: null };
+const STATS_TTL_MS = 60_000;
+
+const signed = (v: number) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(0)}`;
+
+export async function periodStatsLine(): Promise<string | null> {
+  if (process.env.TELEGRAM_STATS_OFF === "1") return null;
+  if (statsCache.at && Date.now() - statsCache.at < STATS_TTL_MS) return statsCache.line;
+  let line: string | null = null;
+  try {
+    const { exportData } = await import("./export.js");
+    // exportData() ÉCRIT dashboard.json et renvoie son chemin (il ne renvoie pas
+    // le JSON) — ~2 s mesurés, d'où le cache et le plafond de temps.
+    const jsonPath = await Promise.race([
+      exportData(),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("stats timeout")), 5000)),
+    ]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prog = (JSON.parse(fs.readFileSync(jsonPath, "utf8")) as any)?.real?.summary?.progression as
+      | Record<string, { pnl?: number; fees?: number; profit?: number }>
+      | undefined;
+    if (prog) {
+      const parts = ["1D", "1W", "1M", "1Y", "ALL"]
+        .filter((k) => prog[k])
+        .map((k) => {
+          const p = prog[k];
+          return `${k} ${signed(p.pnl ?? 0)}/${signed(p.fees ?? 0)}/${signed(p.profit ?? 0)}`;
+        });
+      if (parts.length) line = `📊 PnL/Fees/Profit — ${parts.join(" · ")}`;
+    }
+  } catch {
+    line = null; // RPC saturé, dashboard indisponible… l'alerte part sans les stats
+  }
+  statsCache = { at: Date.now(), line };
+  return line;
+}
+
 export async function sendTelegram(token: string, chatId: string, text: string): Promise<boolean> {
   try {
+    let body = text;
+    const line = await periodStatsLine();
+    if (line) {
+      const MAX = 4000; // limite Telegram 4096 — on garde de la marge
+      body =
+        body.length + line.length + 2 > MAX
+          ? `${body.slice(0, Math.max(0, MAX - line.length - 4))}…\n\n${line}`
+          : `${body}\n\n${line}`;
+    }
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: chatId, text: body, disable_web_page_preview: true }),
     });
     return res.ok;
   } catch {
