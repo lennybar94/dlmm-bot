@@ -241,7 +241,9 @@ function render(d) {
   // Badge SOL/USD dans l'en-tête (demande 21/09) : prix déjà exporté par
   // getSolPriceUsd() (cache 60 s), jamais un taux codé en dur. Masqué si null.
   {
-    const sb = $("solBadge");
+    // NB: $() exige le préfixe « # » (c'est document.querySelector nu) — sans
+    // lui, il cherchait une balise <solbadge> et renvoyait null (fix 21/09).
+    const sb = $("#solBadge");
     if (sb) {
       if (solPrice != null) {
         sb.style.display = "";
