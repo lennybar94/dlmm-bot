@@ -1,0 +1,5 @@
+# Le lab est une copie jetable du bot — rien de ceci ne doit être committé.
+.env
+data/
+logs/
+node_modules

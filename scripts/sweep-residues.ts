@@ -238,7 +238,18 @@ for (const wt of walletTokens) {
        ON CONFLICT(token_key) DO UPDATE SET pool_address=excluded.pool_address, last_swap_at=excluded.last_swap_at, last_value_usd=excluded.last_value_usd`
     ).run(tokenKey, entry.pool, Date.now(), valueUsd);
     const msg = `✅ [${new Date().toLocaleTimeString("fr-FR")}] SWEEP ${entry.symbol} : ${wt.ui.toLocaleString("fr-FR")} tokens → +${gainSol.toFixed(4)} SOL (sig ${sig.slice(0, 12)}…) — gain réalisé en cash`;
-    logEvent("residue-sweep", msg, { poolAddress: entry.pool });
+    // payload machine-lisible (demandé David 24/09 pour « Gains nets du jour »
+    // dans le récap) : gain_sol converti en $ au prix du tick.
+    logEvent("residue-sweep", msg, {
+      poolAddress: entry.pool,
+      payload: { gainSol: Number(gainSol.toFixed(6)), gainUsd: Number((gainSol * solUsd).toFixed(2)), symbol: entry.symbol },
+    });
+    // Cumul journalier (récap « Gains nets du jour », 24/09) : upsert par jour.
+    const day = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(meta.value AS REAL) + excluded.value AS TEXT)`
+    ).run(`sweep_gains_usd:${day}`, (gainSol * solUsd).toFixed(2));
     const creds = getTelegramCreds();
     if (creds) await sendTelegram(creds.token, creds.chatId, msg);
     log(`  ✅ ${entry.symbol} → +${gainSol.toFixed(4)} SOL (${sig.slice(0, 12)}…)`);

@@ -51,11 +51,31 @@ function pnlTag(netPnlUsd: number): string {
     : `🔻 PERTE -${Math.abs(netPnlUsd).toFixed(1)}$`;
 }
 
-// Variante honnête pour les closes : netCash = valueUsd − deposit_usd.
-function closeTag(netCashUsd: number): string {
-  return netCashUsd >= 0
-    ? `✅ GAIN NET +${netCashUsd.toFixed(1)}$`
-    : `⚠️ PERTE NETTE -${Math.abs(netCashUsd).toFixed(1)}$`;
+// Cumul des fees RÉELLEMENT encaissées (wallet) par position, pour le tag de
+// close honnête (fix 24/09) : Σ claims passées (type real-claim, $ parseés du
+// message) + solde de fees du dernier mark (encore on-chain → claimé par la tx
+// de close qui fait removeLiquidity + claim). ≈ feesSol au mark près.
+const _claimCache = new Map<number, number>();
+function claimedSoFarUsd(posId: number): number {
+  const hit = _claimCache.get(posId);
+  if (hit !== undefined) return hit;
+  let past = 0;
+  for (const r of db
+    .prepare(`SELECT message, payload FROM events WHERE type='real-claim' AND position_id=?`)
+    .all(posId) as { message: string; payload: string | null }[]) {
+    let v: number | null = null;
+    try {
+      const p = r.payload ? JSON.parse(r.payload) : null;
+      if (p && typeof p.claimedUsd === "number") v = p.claimedUsd;
+    } catch { /* payload absent/corrompu → fallback regex */ }
+    if (v === null) {
+      const m = r.message.match(/([0-9]+\.[0-9]+)\$/);
+      if (m) v = parseFloat(m[1]);
+    }
+    if (v !== null) past += v;
+  }
+  _claimCache.set(posId, past);
+  return past;
 }
 
 function lastAlertAt(positionId: number, type: string): number {
@@ -65,10 +85,16 @@ function lastAlertAt(positionId: number, type: string): number {
   return row?.at ?? 0;
 }
 
-function logEvent(type: string, message: string, positionId: number, poolAddress: string): void {
+function logEvent(
+  type: string,
+  message: string,
+  positionId: number,
+  poolAddress: string,
+  payload?: unknown
+): void {
   db.prepare(
-    `INSERT INTO events (created_at, position_id, pool_address, type, message) VALUES (?, ?, ?, ?, ?)`
-  ).run(Date.now(), positionId, poolAddress, type, message);
+    `INSERT INTO events (created_at, position_id, pool_address, type, message, payload) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(Date.now(), positionId, poolAddress, type, message, payload ? JSON.stringify(payload) : null);
 }
 
 // Exécute le kill-switch (removeLiquidity 100 % + claim + close) quand un exit
@@ -148,10 +174,23 @@ async function autoClose(
         }
       }
     }
+    // Bilan honnête (fix 24/09) : capital rendu vs déposé + TOTAL des fees
+    // réellement encaissées sur la vie de la position (claims passés loggés +
+    // solde on-chain du tick courant, claimé par la tx de close).
+    const feesTotal = claimedSoFarUsd(id) + Math.max(0, feesUsd);
     const netCashUsd = valueUsd - deposit;
-    const feesNote =
-      feesUsd > 0.5 ? ` · dont ${feesUsd.toFixed(1)}$ de fees déjà comptées par ailleurs` : "";
-    const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${closeTag(netCashUsd)} (rendu ${valueUsd.toFixed(0)}/${deposit.toFixed(0)}$)${feesNote} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
+    const gainLine =
+      netCashUsd >= 0
+        ? `🟢 Capital gagné ${netCashUsd.toFixed(2).padStart(8)} $  (rendu ${valueUsd.toFixed(0)} / déposé ${deposit.toFixed(0)})`
+        : `🔻 Capital perdu ${netCashUsd.toFixed(2).padStart(8)} $  (rendu ${valueUsd.toFixed(0)} / déposé ${deposit.toFixed(0)})`;
+    const m = [
+      `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${detail}`,
+      `📊 Bilan réel de la position`,
+      gainLine,
+      `💰 Fees encaissées ${feesTotal.toFixed(2).padStart(6)} $  (claims + solde clos)`,
+      `🧮 Net total position ${(netCashUsd + feesTotal).toFixed(2).padStart(6)} $`,
+      `sig ${sig.slice(0, 16)}… — fonds retournés au wallet`,
+    ].join("\n");
     logEvent("real-auto-close", m, id, String(pos.pool_address));
     return m;
   } catch (e) {
@@ -471,7 +510,12 @@ export async function realMonitor(): Promise<number> {
           const sig = await realClaimRewards(String(pos.pool_address), String(pos.position_pubkey));
           if (!sig) throw new Error("sig vide — rien claimé");
           const m = `💰 [${ts()}] DLMM RÉEL ${pos.name} : claim AUTO ${feesUsd.toFixed(2)}$ de fees → wallet (sig ${sig.slice(0, 12)}…)`;
-          logEvent("real-claim", m, pos.id, pos.pool_address);
+          // payload machine-lisible (récap « Gains nets du jour », 24/09) +
+          // invalidation du cache claimsSoFarUsd pour cette position.
+          _claimCache.delete(Number(pos.id));
+          logEvent("real-claim", m, pos.id, pos.pool_address, {
+            payload: { claimedUsd: Number(feesUsd.toFixed(2)) },
+          });
           if (creds) await sendTelegram(creds.token, creds.chatId, m);
           alerts++;
         } catch (e) {

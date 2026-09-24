@@ -171,6 +171,63 @@ export async function buildDailyReport(): Promise<string> {
   const tag = (v: number) => (v >= 0 ? "💰" : "🔻");
   const tReal = totalsFor(0);
   const tL4 = totalsFor(1);
+
+  // === GAINS NETS DU JOUR (demandé David 24/09) ===
+  // Convention calquée sur la ligne 1D du dashboard : Σ par position close
+  // aujourd'hui (valeur finale − dépôt, capital pur) + Σ fees du mark final ;
+  // claims & sweeps du jour en cash réel. Zéro approximation croisée.
+  {
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const t0 = dayStart.getTime();
+    const closedToday = db
+      .prepare(
+        `SELECT p.name, m.net_pnl_usd AS pnl, m.fees_usd AS fees
+         FROM real_positions p
+         JOIN real_marks m ON m.id = (SELECT id FROM real_marks WHERE position_id = p.id ORDER BY id DESC LIMIT 1)
+         WHERE p.status = 'closed' AND p.closed_at >= ?`
+      )
+      .all(t0) as { name: string; pnl: number; fees: number }[];
+    let cap = 0;
+    let fee = 0;
+    for (const c of closedToday) {
+      cap += (c.pnl ?? 0) - (c.fees ?? 0);
+      fee += c.fees ?? 0;
+    }
+    // claims auto du jour (fees réellement versées au wallet sur positions ouvertes)
+    const claimedToday = (
+      db
+        .prepare(
+          `SELECT COALESCE(SUM(CAST(json_extract(payload,'$.claimedUsd') AS REAL)),0) AS v
+           FROM events WHERE type='real-claim' AND created_at >= ?`
+        )
+        .get(t0) as { v: number }
+    ).v;
+    // sweeps de résidus du jour (cumul journalier meta, prix SOL live pour les anciens jours)
+    const sweepDay = db
+      .prepare(`SELECT value FROM meta WHERE key = ?`)
+      .get(`sweep_gains_usd:${dayStart.toISOString().slice(0, 10)}`) as { value: string } | undefined;
+    let sweptUsd = sweepDay ? parseFloat(sweepDay.value) || 0 : 0;
+    if (!sweepDay) {
+      // fallback historique (events sans payload d'avant le 24/09) : parse SOL × prix du jour
+      const rows = db
+        .prepare(`SELECT message FROM events WHERE type='residue-sweep' AND created_at >= ?`)
+        .all(t0) as { message: string }[];
+      let solSum = 0;
+      for (const r of rows) {
+        const m = r.message.match(/\+([0-9.,]+) SOL/);
+        if (m) solSum += parseFloat(m[1].replace(",", "."));
+      }
+      if (solSum > 0) sweptUsd = solSum * ((await getSolPriceUsd()) ?? 194);
+    }
+    const netJour = cap + fee + sweptUsd;
+    lines.push("=== GAINS NETS DU JOUR ===");
+    lines.push(
+      `  ${closedToday.length} close(s) · capital ${sgn(cap)} · fees closes ${fee.toFixed(1)}$ · sweeps ${sgn(sweptUsd)}${claimedToday > 0 ? ` · claims en cours ${claimedToday.toFixed(1)}$ (déjà dans les marks)` : ""}`
+    );
+    lines.push(`  NET DU JOUR : ${tag(netJour)} ${sgn(netJour)}`);
+    lines.push("");
+  }
   lines.push("=== TOTAUX (depuis l'origine) ===");
   for (const [label, t] of [
     ["Pilote réel", tReal],

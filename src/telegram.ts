@@ -85,6 +85,51 @@ export async function periodStatsLine(): Promise<string | null> {
   return line;
 }
 
+// Ligne « Gains nets du jour » (demandé David 24/09) : Σ capital pur des closes
+// du jour (valeur finale − dépôt, via dernier mark) + sweeps de résidus du jour.
+// Même convention que src/report.ts et le bloc 1D du dashboard → les trois
+// chiffres racontent la même histoire. null si rien aujourd'hui.
+export async function todayGainsLine(): Promise<string | null> {
+  try {
+    const { db } = await import("./db.js");
+    const { getSolPriceUsd } = await import("./export.js");
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const t0 = dayStart.getTime();
+    const closed = db
+      .prepare(
+        `SELECT m.net_pnl_usd AS pnl, m.fees_usd AS fees
+         FROM real_positions p
+         JOIN real_marks m ON m.id = (SELECT id FROM real_marks WHERE position_id = p.id ORDER BY id DESC LIMIT 1)
+         WHERE p.status = 'closed' AND p.closed_at >= ?`
+      )
+      .all(t0) as { pnl: number; fees: number }[];
+    let cap = 0;
+    for (const c of closed) cap += (c.pnl ?? 0) - (c.fees ?? 0);
+    let swept = 0;
+    const key = `sweep_gains_usd:${dayStart.toISOString().slice(0, 10)}`;
+    const row = db.prepare(`SELECT value FROM meta WHERE key=?`).get(key) as { value: string } | undefined;
+    if (row) swept = parseFloat(row.value) || 0;
+    else {
+      const evs = db
+        .prepare(`SELECT message FROM events WHERE type='residue-sweep' AND created_at>=?`)
+        .all(t0) as { message: string }[];
+      let solSum = 0;
+      for (const e of evs) {
+        const m = e.message.match(/\+([0-9.,]+) SOL/);
+        if (m) solSum += parseFloat(m[1].replace(",", "."));
+      }
+      if (solSum > 0) swept = solSum * ((await getSolPriceUsd()) ?? 194);
+    }
+    const net = cap + swept;
+    if (!closed.length && !swept) return null;
+    const sgn = (v: number) => `${v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(1)}$`;
+    return `📈 Gains nets du jour : ${sgn(net)} (${closed.length} close${closed.length > 1 ? "s" : ""} ${sgn(cap)}, sweeps ${sgn(swept)})`;
+  } catch {
+    return null;
+  }
+}
+
 // api.telegram.org se résout en IPv6 depuis ce host et le connect timeout est
 // intermittent (même cause que le NODE_OPTIONS=ipv4first de scripts/dlmm-run.sh).
 // On le force ici aussi : un envoi lancé à la main (tsx, node -e, script ad hoc)
@@ -94,14 +139,17 @@ dns.setDefaultResultOrder("ipv4first");
 export async function sendTelegram(token: string, chatId: string, text: string): Promise<boolean> {
   try {
     let body = text;
+    const today = await todayGainsLine();
+    if (today) body = `${body}\n${today}`;
     const line = await periodStatsLine();
     if (line) {
       const MAX = 4000; // limite Telegram 4096 — on garde de la marge
-      // Collée sous le message, sans ligne vide : les stats tiennent sur UNE ligne.
+      // Séparée du message par une ligne vide (demandé David 24/09) ; les stats
+      // elles-mêmes restent une ligne par durée.
       body =
-        body.length + line.length + 1 > MAX
-          ? `${body.slice(0, Math.max(0, MAX - line.length - 3))}…\n${line}`
-          : `${body}\n${line}`;
+        body.length + line.length + 2 > MAX
+          ? `${body.slice(0, Math.max(0, MAX - line.length - 4))}\n\n${line}`
+          : `${body}\n\n${line}`;
     }
     const post = () =>
       fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
