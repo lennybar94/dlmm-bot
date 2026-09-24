@@ -514,7 +514,7 @@ export async function realMonitor(): Promise<number> {
           const m = await autoClose(
             pos,
             netOk ? "oor-redeploy" : "oor-force",
-            `hors range ${oorHours.toFixed(1)} h (0 fee) — ${pnlTag(netPnlUsd)} → ${netOk ? "redéploiement" : "libération du capital (grace 1 h écoulée)"}`,
+            `hors range ${oorHours.toFixed(1)} h (0 fee) → ${netOk ? "redéploiement" : "libération du capital (grace 1 h écoulée)"}`,
             netPnlUsd,
             valueUsd,
             creds,
