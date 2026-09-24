@@ -41,10 +41,21 @@ const ts = (): string => new Date().toISOString().slice(11, 16);
 
 // Tag profit/perte explicite (demande David 30/08) : chaque notification
 // Telegram identifie clairement le sens du PnL net (valeur + fees − refSol).
+// ⚠️ Fix affichage 24/09 (leçon GROK-SOL « PROFIT +6,5$ » alors que 490,6$
+// rendus pour 500$ déposés = −9,4$ de capital) : les closes réelles affichent
+// TOUJOURS le net cash réel (valeur rendue − dépôt), jamais netPnlUsd qui
+// inclut des fees déjà comptées ailleurs. Le solde de fees est dit en détail.
 function pnlTag(netPnlUsd: number): string {
   return netPnlUsd >= 0
     ? `💰 PROFIT +${netPnlUsd.toFixed(1)}$`
     : `🔻 PERTE -${Math.abs(netPnlUsd).toFixed(1)}$`;
+}
+
+// Variante honnête pour les closes : netCash = valueUsd − deposit_usd.
+function closeTag(netCashUsd: number): string {
+  return netCashUsd >= 0
+    ? `✅ GAIN NET +${netCashUsd.toFixed(1)}$`
+    : `⚠️ PERTE NETTE -${Math.abs(netCashUsd).toFixed(1)}$`;
 }
 
 function lastAlertAt(positionId: number, type: string): number {
@@ -71,7 +82,8 @@ async function autoClose(
   detail: string,
   netPnlUsd: number,
   valueUsd: number,
-  creds: { token: string; chatId: string } | null
+  creds: { token: string; chatId: string } | null,
+  feesUsd = 0
 ): Promise<string | null> {
   const id = Number(pos.id);
   const deposit = Number(pos.deposit_usd) || 0;
@@ -136,7 +148,10 @@ async function autoClose(
         }
       }
     }
-    const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${pnlTag(netPnlUsd)} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
+    const netCashUsd = valueUsd - deposit;
+    const feesNote =
+      feesUsd > 0.5 ? ` · dont ${feesUsd.toFixed(1)}$ de fees déjà comptées par ailleurs` : "";
+    const m = `✅ [${ts()}] DLMM RÉEL AUTO-CLOSE ${pos.name} : ${reason} — ${closeTag(netCashUsd)} (rendu ${valueUsd.toFixed(0)}/${deposit.toFixed(0)}$)${feesNote} — ${detail} — sig ${sig.slice(0, 16)}… — fonds retournés au wallet`;
     logEvent("real-auto-close", m, id, String(pos.pool_address));
     return m;
   } catch (e) {
@@ -331,7 +346,8 @@ export async function realMonitor(): Promise<number> {
           `chute ${(dayDrop * 100).toFixed(1)}% depuis l'entrée (prix ${price.toPrecision(4)})`,
           netPnlUsd,
           valueUsd,
-          creds
+          creds,
+          feesUsd
         );
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
         alerts++;
@@ -364,7 +380,8 @@ export async function realMonitor(): Promise<number> {
           `perte nette ${(netLossRatio * 100).toFixed(1)}% (fees ${feesUsd.toFixed(2)}$)`,
           netPnlUsd,
           valueUsd,
-          creds
+          creds,
+          feesUsd
         );
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
         alerts++;
@@ -390,7 +407,8 @@ export async function realMonitor(): Promise<number> {
           `au rebond (fees ${feesUsd.toFixed(2)}$)`,
           netPnlUsd,
           valueUsd,
-          creds
+          creds,
+          feesUsd
         );
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
         alerts++;
@@ -499,7 +517,8 @@ export async function realMonitor(): Promise<number> {
             `hors range ${oorHours.toFixed(1)} h (0 fee) — ${pnlTag(netPnlUsd)} → ${netOk ? "redéploiement" : "libération du capital (grace 1 h écoulée)"}`,
             netPnlUsd,
             valueUsd,
-            creds
+            creds,
+            feesUsd
           );
           if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
           alerts++;
@@ -553,7 +572,7 @@ export async function realMonitor(): Promise<number> {
     if (netPnlUsd >= tpThreshold) {
       const detail = `${pos.pilot ? "objectif manche tendance" : "take-profit livre"} atteint (${netPnlUsd.toFixed(1)}$ ≥ ${tpThreshold}$, dont fees ${feesUsd.toFixed(2)}$)`;
       if (config.realExitAuto) {
-        const m = await autoClose(pos, "take-profit", detail, netPnlUsd, valueUsd, creds);
+        const m = await autoClose(pos, "take-profit", detail, netPnlUsd, valueUsd, creds, feesUsd);
         if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
         alerts++;
         continue; // fermée (ou échec traité) — rien d'autre ce tick
@@ -582,7 +601,7 @@ export async function realMonitor(): Promise<number> {
         if (!isDip || lossRatio < config.coolingMaxLossBidask) {
           const detail = `momentum refroidi : intervalle courant ${(cool.current / 1000).toFixed(0)}k$/min = ${(cool.ratio * 100).toFixed(0)}% du pic ${(cool.peak / 1000).toFixed(0)}k$/min sur ${cool.windowMin.toFixed(0)}min (RocketScan)`;
           if (config.realExitAuto) {
-            const m = await autoClose(pos, "cooling-off", detail, netPnlUsd, valueUsd, creds);
+            const m = await autoClose(pos, "cooling-off", detail, netPnlUsd, valueUsd, creds, feesUsd);
             if (m && creds) await sendTelegram(creds.token, creds.chatId, m);
             alerts++;
             continue; // fermée (ou échec traité) — rien d'autre ce tick
