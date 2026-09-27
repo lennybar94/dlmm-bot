@@ -135,6 +135,8 @@ export interface RealOpenResult {
   positionPubkey: string;
   amountX: number; // en unités token (décimales incluses)
   amountY: number;
+  rawX?: bigint; // montants bruts on-chain (pour convertisseur de marqueur $, L4-B stable)
+  rawY?: bigint;
   minBinId: number;
   maxBinId: number;
   entryPrice: number;
@@ -145,7 +147,11 @@ export interface RealOpenResult {
  * Montants : même math que le paper (buildLiquidity), convertie en lamports.
  * Range : récentrée sur le bin actif on-chain (échelle SDK ≠ Data API).
  */
-export async function realOpenPosition(opp: OpportunityScore, depositUsd?: number): Promise<RealOpenResult> {
+export async function realOpenPosition(
+  opp: OpportunityScore,
+  depositUsd?: number,
+  opts: { yOverrideRaw?: bigint } = {}
+): Promise<RealOpenResult> {
   assertPaperOnly("realOpenPosition");
   if (!config.walletPrivateKey) throw new Error("WALLET_PRIVATE_KEY manquant dans .env");
 
@@ -180,7 +186,11 @@ export async function realOpenPosition(opp: OpportunityScore, depositUsd?: numbe
   const decX = await decimalsFor(connection, p.token_x.address, p.token_x.decimals);
   const decY = await decimalsFor(connection, p.token_y.address, p.token_y.decimals);
   const rawX = preset.oneSided === "y" ? 0n : BigInt(Math.floor((liq.x0 ?? 0) * 10 ** decX));
-  const rawY = preset.oneSided === "x" ? 0n : BigInt(Math.floor((liq.y0 ?? 0) * 10 ** decY));
+  let rawY = preset.oneSided === "x" ? 0n : BigInt(Math.floor((liq.y0 ?? 0) * 10 ** decY));
+  // Pilote L4-B sur pool stable (TRUMP-USDC…) : le côté Y a été acheté en amont
+  // (swapSolForStable) → on dépose le montant RÉEL en sa devise native (raw UI),
+  // pas la projection SOL de la math paper.
+  if (opts.yOverrideRaw !== undefined && opts.yOverrideRaw > 0n) rawY = opts.yOverrideRaw;
   if (rawX <= 0n && rawY <= 0n) throw new Error("montants nuls (math) — position non ouverte");
   if (rawX < 0n || rawY < 0n) throw new Error("montants négatifs (math) — position non ouverte");
 
@@ -246,6 +256,8 @@ export async function realOpenPosition(opp: OpportunityScore, depositUsd?: numbe
     positionPubkey: positionPubKey.publicKey.toBase58(),
     amountX: Number(rawX) / 10 ** decX,
     amountY: Number(rawY) / 10 ** decY,
+    rawX,
+    rawY,
     minBinId,
     maxBinId,
     entryPrice,

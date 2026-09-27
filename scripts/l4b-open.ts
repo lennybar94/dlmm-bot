@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { db, isTokenBlacklisted, isPilotInventoryPending } from "../src/db.js";
 import { config } from "../src/config.js";
 import { fetchPool, fetchOhlcv } from "../src/api.js";
+import { getSolPriceUsd } from "../src/export.js";
 import {
   buildStrategyHint,
   analyzeTrend,
@@ -24,6 +25,7 @@ import {
 import { buildLiquidity, estimateYUsd } from "../src/paper.js";
 import { realOpenPosition } from "../src/real.js";
 import { swapSolForToken, tokenBalanceOf } from "../src/swap.js";
+import { swapSolForStable, USDC_MINT, USDT_MINT } from "../src/swap-stable.js";
 
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -75,6 +77,12 @@ if (Number.isNaN(usd)) usd = isMajor ? config.pilotUsdMajor : PILOT_USD_STANDARD
 const depositY = usd / yUsd;
 const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
 const hint = buildStrategyHint(p, activeBinId, vol, "spot-spread", p.current_price, candles);
+const symY0 = (p.token_y.symbol ?? "").toUpperCase();
+const yIsStablePlan = symY0 === "USDC" || symY0 === "USDT";
+// ⚠️ Échelle vérifiée 27/09 (dry-run TRUMP-USDC → « prix 2,11 SOL/TRUMP ») :
+// current_price est TOUJOURS en SOL UI, y compris sur les pools X-USDC. La math
+// paper reste donc en SOL UI (depositY inchangé) ; seul le PAIEMENT du côté Y
+// diffère : y0 SOL d'équivalent → achetés en USDC au prix SOL-$ du jour.
 const liq = buildLiquidity({
   depositY,
   price: p.current_price,
@@ -84,9 +92,27 @@ const liq = buildLiquidity({
   oneSided: "none",
 });
 const x0 = liq.x0; // tokens à détenir (achat)
-const y0 = liq.y0; // SOL à déposer
-const buySol = x0 * p.current_price * (1 + MINT_RESERVE_PCT); // SOL pour l'achat
-const needSol = buySol + y0 + FEE_BUF_SOL;
+const y0ui = liq.y0; // équivalent SOL du côté Y (devise de paiement gérée en 2bis)
+const y0 = y0ui; // alias historique (affichages)
+// Élargissement 27/09 (go David) : pools tendance stables (TRUMP-USDC…). Le
+// wallet ne tient que du SOL → on swappe une partie SOL→stable via un pool
+// majeur SOL-USDC/USDT (slippage 100 bps max). Besoin exprimé en SOL :
+// dépôt Y en $ ÷ prix SOL + marge. Pour les pools SOL-quotés, inchangé.
+const symY = (p.token_y.symbol ?? "").toUpperCase();
+const yIsStable = symY === "USDC" || symY === "USDT";
+// ⚠️ Échelle des prix (vérifié 27/09) : p.current_price est en $ UI pour les
+// pools stables (TRUMP-USDC → 2,12 $) mais en SOL UI pour les pools SOL-quotés.
+// Le dépôt balancé doit donc être exprimé dans la DEVISE DU POOL : USDC pur
+// pour X-USDC, SOL pour X-SOL. La projection paper se fait avec yUsd=1 (UI-$),
+// puis le côté Y est converti SOL→stable au prix du jour.
+const solUsdForPlan = await getSolPriceUsd();
+if (yIsStable && !solUsdForPlan) {
+  console.error("⛔ Prix SOL indisponible — impossible de dimensionner le côté stable. Abandon.");
+  process.exit(1);
+}
+const buySol = x0 * p.current_price * (1 + MINT_RESERVE_PCT); // SOL pour l'achat X
+const yNeedSol = y0ui; // équivalent SOL du dépôt Y (payé en stable si pool stable)
+const needSol = buySol + yNeedSol * (yIsStable ? 1.005 : 1) + FEE_BUF_SOL;
 const spreadRaw = Math.abs(hint.maxBinId - hint.minBinId);
 const spread = Math.min(spreadRaw, 69);
 const cov = (1 - Math.pow(1 + p.bin_step / 10000, -spread)) * 100;
@@ -205,15 +231,98 @@ db.prepare(
 ).run(xMint, pick, xSymbol, buyTargetRaw.toString(), Number(buyTargetRaw) / 10 ** xDecimals, Date.now());
 console.log(`1) Inventaire pending : ${xSymbol} (${xMint.slice(0, 8)}…) — protégé du sweep.`);
 
-// 2) Achat SOL → X
+// 2bis) Achat du côté Y stable si besoin (SOL → USDC/USDT via pool majeur).
+// Élargissement 27/09 : les gros pools tendance stables (TRUMP-USDC, PENGU-USDC…)
+// sont maintenant jouables par le pilote. Slippage 100 bps max + double lecture
+// du solde (pattern sell-omo) ; échec = inventaire failed, aucune ouverture.
+// ⚠️ y0 est une projection paper ; pour un dépôt balancé exact on recalculera
+// rawY à partir du stable RÉCEMMENT reçu (après-vente) × ratio liq.x0/liq.y0.
+let yDepositRaw = 0n; // résolu après l'achat du stable
+if (yIsStable) {
+  const stableMint = symY === "USDC" ? USDC_MINT : USDT_MINT;
+  const stableDec = p.token_y.decimals ?? 6;
+  const solForStable = yNeedSol * 1.002; // marge slippage quote
+  const routePool =
+    symY === "USDC"
+      ? process.env.PILOT_USDC_POOL || "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1" // Ray SOL-USDC (depth testée)
+      : process.env.PILOT_USDT_POOL || "";
+  if (!routePool) {
+    console.error("⛔ Pas de pool de routage pour acheter USDT — configure PILOT_USDT_POOL.");
+    process.exit(1);
+  }
+  try {
+    const before = await tokenBalanceOf(conn, signer.publicKey, stableMint);
+    const rs = await swapSolForStable({
+      poolAddress: routePool,
+      stableMint,
+      stableDecimals: stableDec,
+      solAmount: solForStable,
+    });
+    await new Promise((res) => setTimeout(res, 3000));
+    const after = await tokenBalanceOf(conn, signer.publicKey, stableMint);
+    const gotUi = Number(after - before) / 10 ** stableDec;
+    console.log(`2bis) Stable OK — sig ${rs.sig} — reçu ${gotUi.toLocaleString("fr-FR")} ${symY} (cible ≈ ${y0ui.toFixed(2)} ${symY})`);
+    if (after - before < BigInt(Math.floor(y0 * 0.99 * 10 ** stableDec))) {
+      db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
+      console.error("⛔ Stable reçu insuffisant — inventaire failed, AUCUNE ouverture.");
+      process.exit(1);
+    }
+    const receivedRaw = after - before;
+    // Dépôt balancé exact : X déjà acheté côté wallet (buyTargetRaw ≥ x0) et Y
+    // stable reçu. Le ratio paper x0/y0 définit le montant Y cohérent avec le X
+    // réellement disponible → on dépose min(nécessaire pour x0, reçu − réserve).
+    const yNeededForX0Raw = BigInt(Math.ceil((x0 / liq.y0) * Number(receivedRaw)));
+    const yReserveRaw = BigInt(Math.floor(Number(receivedRaw) * 0.005)); // 0,5 % marge frais/realloc
+    yDepositRaw = yNeededForX0Raw > receivedRaw ? receivedRaw - yReserveRaw : yNeededForX0Raw;
+    if (yDepositRaw <= 0n) {
+      db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
+      console.error("⛔ Stable insuffisant pour équilibrer X — AUCUNE ouverture.");
+      process.exit(1);
+    }
+  } catch (err) {
+    db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
+    console.error(`⛔ Achat stable échoué : ${String(err)} — inventaire failed.`);
+    process.exit(1);
+  }
+}
+
+// 2) Achat de X :
+//   - pool SOL-quoté : swap direct SOL→X dans le pool cible (inchangé).
+//   - pool stable (27/09) : on a acheté USDC en 2bis ; l'achat X se fait donc
+//     USDC→X via le pool cible (même mécanisme DLMM, monnaie d'entrée stable).
 try {
   const before = await tokenBalanceOf(conn, signer.publicKey, xMint);
-  const r = await swapSolForToken({
-    poolAddress: pick,
-    xMint,
-    xDecimals,
-    solAmount: buySol,
-  });
+  let r;
+  if (yIsStable) {
+    // import dynamique évite une dépendance circulaire potentielle
+    const { swapStableForToken } = await import("../src/swap-stable.js");
+    const decY = p.token_y.decimals ?? 6;
+    const stableMint = symY === "USDC" ? USDC_MINT : USDT_MINT;
+    const stableBalRaw = await tokenBalanceOf(conn, signer.publicKey, stableMint);
+    // Budget achat X en $ UI (=stable) : x0 × prix ($ pour pool stable) × (1+réserve)
+    // Budget achat X exprimé en stable ($) : buySol SOL × prix SOL-$ (+ réserve déjà dans buySol)
+    const wantUsd = buySol * (solUsdForPlan as number);
+    // On garde yDepositRaw côté dépôt ; tout le surplus stable va à l'achat X.
+    const spendableRaw = stableBalRaw > yDepositRaw ? stableBalRaw - yDepositRaw : 0n;
+    const wantRaw = BigInt(Math.floor(wantUsd * 10 ** decY));
+    const spendRaw = wantRaw < spendableRaw ? wantRaw : spendableRaw;
+    if (spendRaw <= 0n) throw new Error("aucun stable excédentaire pour acheter X");
+    r = await swapStableForToken({
+      poolAddress: pick,
+      xMint,
+      xDecimals,
+      stableMint,
+      stableDecimals: decY,
+      stableAmountUi: Number(spendRaw) / 10 ** decY,
+    });
+  } else {
+    r = await swapSolForToken({
+      poolAddress: pick,
+      xMint,
+      xDecimals,
+      solAmount: buySol,
+    });
+  }
   await new Promise((res) => setTimeout(res, 3000));
   const after = await tokenBalanceOf(conn, signer.publicKey, xMint);
   const received = Number(after - before) / 10 ** xDecimals;
@@ -239,7 +348,7 @@ const opp = {
 };
 let r;
 try {
-  r = await realOpenPosition(opp, usd);
+  r = await realOpenPosition(opp, usd, yIsStable ? { yOverrideRaw: yDepositRaw } : {});
 } catch (err) {
   db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
   console.error(`⛔ Ouverture échouée : ${String(err)} — inventaire failed (le token reste au wallet, revoir le plan).`);
@@ -259,7 +368,7 @@ const posId = Number(
     .run(Date.now(), pick, p.name, "spot-spread", usd, r.positionPubkey, r.sig,
       r.minBinId, r.maxBinId, p.bin_step, r.entryPrice,
       p.token_x.symbol ?? null, p.token_y.symbol ?? null, r.amountX, r.amountY,
-      buySol + y0)
+      buySol + (yIsStable ? yNeedSol : y0))
     .lastInsertRowid as number)
 );
 db.prepare(

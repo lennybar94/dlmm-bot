@@ -52,8 +52,12 @@ try {
   for (const r of rows) {
     const sig = (r.signals || '');
     if (!sig.includes('tendance (L4-A)')) continue;
+    // Élargissement 27/09 (go David) : le pilote achète X depuis SOL puis dépose
+    // balancé ; la devise Y du pool (SOL ou stable) n'affecte PAS la mécanique.
+    // Les gros pools tendance étaient massacrés par le filtre y==SOL (TRUMP-USDC,
+    // PENGU-USDC, wNEAR-USDC, tOpenAI-USDC… tous badgeés L4-A mais écartés).
     const symY = (r.token_y_symbol || '').toLowerCase();
-    if (symY !== 'sol' && symY !== 'wsol') continue;
+    if (!['sol', 'wsol', 'usdc', 'usdt'].includes(symY)) continue;
     if (inPos.has(r.pool_address)) continue;
     if (bl.has((r.token_x_symbol || '').toLowerCase())) continue;
     if (recentPilotTokens.has((r.token_x_symbol || '').toLowerCase())) continue; // anti-ré-entrée L4-B v2

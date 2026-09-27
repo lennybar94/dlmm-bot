@@ -6,3 +6,7 @@ logs/
 
 # Backups DB (lourds, jamais pushés)
 backups/
+
+# artefacts du test Jev (archive 24/09)
+lab/.tskey
+lab/jev_run.py
