@@ -83,8 +83,19 @@ const yIsStablePlan = symY0 === "USDC" || symY0 === "USDT";
 // current_price est TOUJOURS en SOL UI, y compris sur les pools X-USDC. La math
 // paper reste donc en SOL UI (depositY inchangé) ; seul le PAIEMENT du côté Y
 // diffère : y0 SOL d'équivalent → achetés en USDC au prix SOL-$ du jour.
+// depositY est en unités de la devise Y (estimateYUsd ≈ 1$ pour un stable).
+// La math paper travaille en SOL UI → conversion $→SOL indispensable ici, sinon
+// le dépôt est surdimensionné d'un facteur prixSOL (bug dry-run SKHY 27/09).
+const symYpre = (p.token_y.symbol ?? "").toUpperCase();
+const yIsStablePre = symYpre === "USDC" || symYpre === "USDT";
+const solUsdPre = await getSolPriceUsd();
+if (yIsStablePre && !solUsdPre) {
+  console.error("⛔ Prix SOL indisponible — abandon.");
+  process.exit(1);
+}
+const depositYSol = yIsStablePre ? depositY / (solUsdPre as number) : depositY;
 const liq = buildLiquidity({
-  depositY,
+  depositY: depositYSol,
   price: p.current_price,
   minBinId: hint.minBinId,
   maxBinId: hint.maxBinId,
@@ -100,11 +111,11 @@ const y0 = y0ui; // alias historique (affichages)
 // dépôt Y en $ ÷ prix SOL + marge. Pour les pools SOL-quotés, inchangé.
 const symY = (p.token_y.symbol ?? "").toUpperCase();
 const yIsStable = symY === "USDC" || symY === "USDT";
-// ⚠️ Échelle des prix (vérifié 27/09) : p.current_price est en $ UI pour les
-// pools stables (TRUMP-USDC → 2,12 $) mais en SOL UI pour les pools SOL-quotés.
-// Le dépôt balancé doit donc être exprimé dans la DEVISE DU POOL : USDC pur
-// pour X-USDC, SOL pour X-SOL. La projection paper se fait avec yUsd=1 (UI-$),
-// puis le côté Y est converti SOL→stable au prix du jour.
+// ⚠️ Échelle des prix (re-vérifiée 27/09, dry-run SKHY = 65 SOL/SKHY) :
+// p.current_price est TOUJOURS en SOL UI, même sur un pool X-USDC. Donc x0/y0
+// de la math paper sont déjà en SOL — il faut DIVISER par le prix SOL quand on
+// paie en stable ($ UI), et non pas comme avant où buySol/wantUsd multipliaient
+// deux fois le prix SOL (besoin gonflé ×prix² → ~80 k$ simulés pour 500 $).
 const solUsdForPlan = await getSolPriceUsd();
 if (yIsStable && !solUsdForPlan) {
   console.error("⛔ Prix SOL indisponible — impossible de dimensionner le côté stable. Abandon.");
@@ -250,6 +261,8 @@ if (yIsStable) {
     console.error("⛔ Pas de pool de routage pour acheter USDT — configure PILOT_USDT_POOL.");
     process.exit(1);
   }
+  // cible en $ UI = équivalent SOL du dépôt × prixSOL (y0 est en SOL UI)
+  const yTargetUi = y0 * (solUsdForPlan as number);
   try {
     const before = await tokenBalanceOf(conn, signer.publicKey, stableMint);
     const rs = await swapSolForStable({
@@ -261,8 +274,8 @@ if (yIsStable) {
     await new Promise((res) => setTimeout(res, 3000));
     const after = await tokenBalanceOf(conn, signer.publicKey, stableMint);
     const gotUi = Number(after - before) / 10 ** stableDec;
-    console.log(`2bis) Stable OK — sig ${rs.sig} — reçu ${gotUi.toLocaleString("fr-FR")} ${symY} (cible ≈ ${y0ui.toFixed(2)} ${symY})`);
-    if (after - before < BigInt(Math.floor(y0 * 0.99 * 10 ** stableDec))) {
+    console.log(`2bis) Stable OK — sig ${rs.sig} — reçu ${gotUi.toLocaleString("fr-FR")} ${symY} (cible ≈ ${yTargetUi.toFixed(2)} ${symY})`);
+    if (after - before < BigInt(Math.floor(yTargetUi * 0.99 * 10 ** stableDec))) {
       db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
       console.error("⛔ Stable reçu insuffisant — inventaire failed, AUCUNE ouverture.");
       process.exit(1);
