@@ -184,8 +184,18 @@ if (hardFail) {
   process.exit(1);
 }
 
+// Marge de slippage par pool (env PILOT_SLIPPAGE_BPS:<SYM>=…, sinon défauts
+// swap.ts/swap-stable.ts). ANTHROPIC est notoirement glissant sur nos achats
+// SOL→X — demande David 27/09 : élargir sa marge pour ne pas mourir en « reçu
+// insuffisant » à chaque tentative.
+const slipOverride = (() => {
+  const key = `PILOT_SLIPPAGE_BPS_${(p.token_x.symbol ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  const v = Number(process.env[key] || "");
+  return Number.isFinite(v) && v > 0 ? v : undefined;
+})();
+
 // --- Plan ---
-console.log(`\n--- PLAN (spot-spread balancé, ${usd}$) ---`);
+console.log(`\n--- PLAN (spot-spread balancé, ${usd}$)${slipOverride ? ` · slippage ${slipOverride} bps (${p.token_x.symbol})` : ""} ---`);
 console.log(`Dépôt : ${x0.toLocaleString("fr-FR")} ${p.token_x.symbol ?? "X"} + ${y0.toFixed(4)} SOL (projeté sur la courbe)`);
 console.log(`Achat : ${buySol.toFixed(4)} SOL → ${(x0 * (1 + MINT_RESERVE_PCT)).toLocaleString("fr-FR")} ${p.token_x.symbol} (marge ${MINT_RESERVE_PCT * 100}%)`);
 console.log(`Besoin total : ${needSol.toFixed(4)} SOL (achat ${buySol.toFixed(4)} + dépôt ${y0.toFixed(4)} + frais ${FEE_BUF_SOL})`);
@@ -327,6 +337,7 @@ try {
       stableMint,
       stableDecimals: decY,
       stableAmountUi: Number(spendRaw) / 10 ** decY,
+      ...(slipOverride ? { slippageBps: slipOverride } : {}),
     });
   } else {
     r = await swapSolForToken({
@@ -334,6 +345,7 @@ try {
       xMint,
       xDecimals,
       solAmount: buySol,
+      ...(slipOverride ? { slippageBps: slipOverride } : {}),
     });
   }
   await new Promise((res) => setTimeout(res, 3000));
