@@ -124,7 +124,15 @@ if (yIsStable && !solUsdForPlan) {
 const buySol = x0 * p.current_price * (1 + MINT_RESERVE_PCT); // SOL pour l'achat X
 const yNeedSol = y0ui; // équivalent SOL du dépôt Y (payé en stable si pool stable)
 const needSol = buySol + yNeedSol * (yIsStable ? 1.005 : 1) + FEE_BUF_SOL;
-const spreadRaw = Math.abs(hint.maxBinId - hint.minBinId);
+// Élargissement de range sur demande David (28/09) : le preset spot-spread du
+// pilote donne ±10-15 bins → ≈±7 % sur un bin_step 80. Les données disent que
+// 33 % des closes meurent « hors range » et que la manche passe 45 % de son
+// temps hors range → multiplicateur de bins par pool via env PILOT_SPREAD_MULT_<SYM>
+// (>1), clamp on-chain 69 bins conservé. Sans env = comportement strictement inchangé.
+const spreadMultKey = `PILOT_SPREAD_MULT_${(p.token_x.symbol ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+const spreadMult = (() => { const v = Number(process.env[spreadMultKey] || ""); return Number.isFinite(v) && v > 1 ? v : 1; })();
+const spreadRaw0 = Math.abs(hint.maxBinId - hint.minBinId);
+const spreadRaw = Math.round(spreadRaw0 * spreadMult);
 const spread = Math.min(spreadRaw, 69);
 const cov = (1 - Math.pow(1 + p.bin_step / 10000, -spread)) * 100;
 
@@ -199,7 +207,7 @@ console.log(`\n--- PLAN (spot-spread balancé, ${usd}$)${slipOverride ? ` · sli
 console.log(`Dépôt : ${x0.toLocaleString("fr-FR")} ${p.token_x.symbol ?? "X"} + ${y0.toFixed(4)} SOL (projeté sur la courbe)`);
 console.log(`Achat : ${buySol.toFixed(4)} SOL → ${(x0 * (1 + MINT_RESERVE_PCT)).toLocaleString("fr-FR")} ${p.token_x.symbol} (marge ${MINT_RESERVE_PCT * 100}%)`);
 console.log(`Besoin total : ${needSol.toFixed(4)} SOL (achat ${buySol.toFixed(4)} + dépôt ${y0.toFixed(4)} + frais ${FEE_BUF_SOL})`);
-console.log(`Range : ${spread} bins (≈ ±${(cov / 2).toFixed(0)}% autour du prix${spread < spreadRaw ? `, clampé depuis ${spreadRaw}` : ""}) · bin_step ${p.bin_step}`);
+console.log(`Range : ${spread} bins (≈ ±${(cov / 2).toFixed(0)}% autour du prix${spread < spreadRaw ? `, clampé depuis ${spreadRaw}` : ""}) · bin_step ${p.bin_step}${spreadMult > 1 ? ` · ×${spreadMult} range (${spreadMultKey})` : ""}`);
 
 // --- Gardes solde + garde 80 % ---
 const conn = new Connection(config.rpcUrl, "confirmed");
