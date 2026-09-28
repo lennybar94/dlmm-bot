@@ -411,7 +411,11 @@ export async function realMonitor(): Promise<number> {
     //      fee-harvesters (CYBERLEEK −3,8 %, GTA6 −2,8 % net). AUTO via le
     //      même kill-switch ; cooldown d'échec 1 h dans autoClose.
     const netLossRatio = refSol > 0 ? -netPnlSol / refSol : 0;
-    if (netLossRatio > config.valueStopLoss) {
+    // Book memes : seuil VALUE_STOP_LOSS (0.07 depuis sweep 28/09). Pilote
+    // L4-B : PILOT_VALUE_STOP_LOSS (0.10 — isolé pour le verdict ANTHROPIC
+    // du 26/10, cf. config.ts).
+    const vsThreshold = pos.pilot ? config.pilotValueStopLoss : config.valueStopLoss;
+    if (netLossRatio > vsThreshold) {
       if (config.realExitAuto) {
         const m = await autoClose(
           pos,

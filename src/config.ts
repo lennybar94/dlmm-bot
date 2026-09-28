@@ -83,6 +83,13 @@ export const config = {
   // spirals (cc −12 %, Pistacio −11 %, Morty −13 % net) et épargne les
   // fee-harvesters (CYBERLEEK −3,8 %, GTA6 −2,8 % net). Doctrine fees +++.
   valueStopLoss: num("VALUE_STOP_LOSS", 0.10),
+  // Seuil value-stop du pilote L4-B (sweep 28/09, option 2 validée David) :
+  // le book memes passe à 0.07 (plateau robuste walk-forward/haircut/drift),
+  // le pilote garde 0.10 pour ne pas brouiller le verdict ANTHROPIC du 26/10
+  // (range ×2 = la largeur doit avoir le temps de travailler avant qu'un
+  // stop resserré ne coupe ses pertes). Défaut = valueStopLoss : sans .env,
+  // comportement identique pour les deux manches.
+  pilotValueStopLoss: num("PILOT_VALUE_STOP_LOSS", num("VALUE_STOP_LOSS", 0.10)),
   minClaimUsd: num("MIN_CLAIM_USD", 25),
   // Pilote réel : alerte « position en attente » après X h hors range (aucun
   // fee) — décision laisser dormir / redéployer (kill-switch).
