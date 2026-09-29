@@ -218,7 +218,7 @@ export async function exportData(): Promise<string> {
   // Ajouté 2026-08-23 (demande David).
   const realRows = (db
     .prepare(
-      `SELECT rp.id, rp.name, rp.token_x_symbol, rp.token_y_symbol, rp.strategy, rp.pool_address, rp.deposit_usd, rp.amount_y,
+      `SELECT rp.id, rp.name, rp.token_x_symbol, rp.token_y_symbol, rp.strategy, rp.pool_address, rp.deposit_usd, rp.amount_y, rp.invested_sol,
               rp.min_bin_id, rp.max_bin_id, rp.position_pubkey, rp.opened_at, rp.pilot,
               rm.value_usd, rm.net_pnl_usd, rm.in_range, rm.taken_at
        FROM real_positions rp
@@ -424,8 +424,18 @@ export async function exportData(): Promise<string> {
   } catch {
     walletFreeSol = null; // RPC indisponible → le dashboard affiche sans solde libre
   }
-  const deployedMeme = realRows.reduce((a, p) => a + (p.pilot ? 0 : Number(p.amount_y ?? 0)), 0);
-  const deployedTrend = realRows.reduce((a, p) => a + (p.pilot ? Number(p.amount_y ?? 0) : 0), 0);
+  // SOL-équivalent déployé : amount_y est la devise Y du pool (SOL sur X-SOL,
+  // USDC sur X-USDC — incident wNEAR 29/09). Pour le pilote, invested_sol est
+  // LA référence (sortie réelle du wallet) ; sinon conversion ÷prixSOL si stable.
+  const solEquiY = (p: Record<string, any>): number => {
+    if (p.pilot && Number(p.invested_sol) > 0) return Number(p.invested_sol);
+    const y = Number(p.amount_y ?? 0);
+    const sym = String(p.token_y_symbol ?? "").toUpperCase();
+    if ((sym === "USDC" || sym === "USDT") && solPriceUsd && solPriceUsd > 0) return y / solPriceUsd;
+    return y;
+  };
+  const deployedMeme = realRows.reduce((a, p) => a + (p.pilot ? 0 : solEquiY(p)), 0);
+  const deployedTrend = realRows.reduce((a, p) => a + (p.pilot ? solEquiY(p) : 0), 0);
   const deployedSol = deployedMeme + deployedTrend;
   const totalSol = walletFreeSol !== null ? walletFreeSol + deployedSol : null;
   // Manches book hybride (01/09) : guardPct = manche MEMES (open-paper),
@@ -479,7 +489,7 @@ export async function exportData(): Promise<string> {
   // détriment de la collecte — on mesure les deux côtés indépendamment).
   const pilotRows = db
     .prepare(
-      `SELECT rp.id, rp.name, rp.strategy, rp.deposit_usd, rp.amount_y, rp.status,
+      `SELECT rp.id, rp.name, rp.strategy, rp.deposit_usd, rp.amount_y, rp.invested_sol, rp.status,
               rp.token_x_symbol, rp.token_y_symbol, rm.net_pnl_usd, rm.fees_usd
        FROM real_positions rp
        LEFT JOIN real_marks rm ON rm.id = (
@@ -491,7 +501,21 @@ export async function exportData(): Promise<string> {
   const pilot = {
     count: pilotRows.length,
     open: pilotRows.filter((r) => r.status === "open").length,
-    deployedSol: pilotRows.reduce((a, r) => a + Number(r.amount_y ?? 0), 0),
+    // SOL réellement en position aujourd'hui : status='open' uniquement, et
+    // invested_sol quand il existe (sortie wallet réelle ; amount_y peut être du
+    // USDC sur un pool stable — incident wNEAR 29/09).
+    deployedSol: pilotRows
+      .filter((r) => r.status === "open")
+      .reduce(
+        (a, r) =>
+          a +
+          (Number(r.invested_sol ?? 0) > 0
+            ? Number(r.invested_sol)
+            : String(r.token_y_symbol ?? "").toUpperCase().match(/USDC|USDT/) && solPriceUsd
+              ? Number(r.amount_y ?? 0) / solPriceUsd
+              : Number(r.amount_y ?? 0)),
+        0
+      ),
     purUsd: pilotRows.reduce((a, r) => a + (Number(r.net_pnl_usd ?? 0) - Number(r.fees_usd ?? 0)), 0),
     feesUsd: pilotRows.reduce((a, r) => a + Number(r.fees_usd ?? 0), 0),
     positions: pilotRows.map((r) => ({
