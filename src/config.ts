@@ -43,6 +43,9 @@ export const config = {
   // API DLMM (Data API officielle)
   dlmmApiBase: str("DLMM_API_BASE", "https://dlmm.datapi.meteora.ag"),
   rpcUrl: str("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
+  // Second endpoint (autre clé Helius ou public) utilisé par le moniteur quand le
+  // primaire renvoie trop de 429 — les exits on-chain ne doivent pas attendre un tier saturé.
+  rpcFallbackUrl: str("SOLANA_RPC_URL_FALLBACK", ""),
 
   // Cluster Solana pour le MODE RÉEL. Défaut "devnet" = sécurité : phase test
   // (SAFETY.md) — passer EXPLICITEMENT à "mainnet-beta" avant tout fonds réel.

@@ -211,7 +211,17 @@ export async function realMonitor(): Promise<number> {
     return 0;
   }
   const user = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(config.walletPrivateKey, "base64")));
-  const connection = new Connection(config.rpcUrl, "confirmed");
+  // Bascule anti-429 (29/09) : si le compteur du watchdog signale une saturation persistante
+  // (marqueur fichier posé par dlmm-realwatchdog.sh), le run courant part directement sur le
+  // fallback — sinon primaire. Le marqueur expire après 10 min pour revenir au primaire vite.
+  const fsR = require("node:fs") as typeof import("node:fs");
+  let useFallback = false;
+  try {
+    const st = fsR.statSync("/tmp/dlmm-rpc-saturated");
+    useFallback = Date.now() - st.mtimeMs < 10 * 60_000 && !!config.rpcFallbackUrl;
+  } catch { /* pas de marqueur → primaire */ }
+  const connection = new Connection(useFallback ? config.rpcFallbackUrl : config.rpcUrl, "confirmed");
+  if (useFallback) console.warn("[real-monitor] ⚠️ RPC primaire saturé (marqueur) — run sur FALLBACK");
   let alerts = 0;
 
   // ⚠️ LECTURE BATCHÉE (fix anti-429 2026-08-26) : getAllLbPairPositionsByUser

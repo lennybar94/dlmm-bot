@@ -154,22 +154,45 @@ function onLbPair(poolAddr: string, data: Buffer): void {
   }
 }
 
+// Cache des métadonnées de pool (binStep/decimals/reserves) : elles ne changent
+// pas. Sans cache, subscribePool refaisait createPool (≈6 requêtes HTTP Helius)
+// À CHAQUE refresh tant que le ws était bouché — tempête auto-entretenue de 429
+// (incident 29/09 : wsmonitor log ×1 M lignes, « ws error 429 » permanent).
+const poolMetaCache = new Map<string, { binStep: number; decX: number; decY: number; lastBin: number; reserveX: string; reserveY: string }>();
+
 async function subscribePool(poolAddr: string): Promise<void> {
   const existing = states.get(poolAddr);
   if (existing && existing.subPair !== null) return;
+  // si le ws n'est pas vivant, NE PAS resouscrire en boucle : garder le plan
+  // en mémoire, la reconnexion (scheduleReconnect/reconnectLoop) resouscrira.
+  // web3.js 1.x : RpcWebSocketConnection.isConnected() — si absent/fermé, on considère le ws mort.
+  const wsAlive = !!conn && typeof conn._rpcWebSocket?.isConnected === "function" && conn._rpcWebSocket.isConnected();
+  if (!wsAlive) {
+    if (poolMetaCache.has(poolAddr)) return; // déjà planifié, on attend le ws
+  }
+  let pool: unknown;
   try {
-    const pool = await createPool(conn, new PublicKey(poolAddr), { cluster: config.cluster });
+    pool = await createPool(conn, new PublicKey(poolAddr), { cluster: config.cluster });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const lb: any = (pool as any).lbPair;
-    const st: PoolState = {
+    poolMetaCache.set(poolAddr, {
       binStep: Number(lb.bin_step ?? lb.binStep ?? 0),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       decX: Number((pool as any).tokenX?.decimals ?? 9),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       decY: Number((pool as any).tokenY?.decimals ?? 9),
+      lastBin: Number(lb.active_id ?? lb.activeId ?? null),
+      reserveX: String(lb.reserve_x ?? lb.reserveX ?? ""),
+      reserveY: String(lb.reserve_y ?? lb.reserveY ?? ""),
+    });
+    const meta = poolMetaCache.get(poolAddr)!;
+    const st: PoolState = {
+      binStep: meta.binStep,
+      decX: meta.decX,
+      decY: meta.decY,
       lastX: null,
       lastY: null,
-      lastBin: Number(lb.active_id ?? lb.activeId ?? null),
+      lastBin: meta.lastBin,
       events: 0,
       deltaX: 0,
       deltaY: 0,
@@ -220,6 +243,9 @@ async function refreshPositions(): Promise<void> {
     .prepare(`SELECT pool_address FROM real_positions WHERE status = 'open'`)
     .all() as { pool_address: string }[];
   const want = new Set(open.map((r) => r.pool_address));
+  // anti-tempête 29/09 : si une souscription a échoué (ws bouché), on réessaie AU PLUS
+  // une fois par tick, avec le cache méta pour ne pas repayer createPool ; et un échec
+  // répété n'engendre plus de rafale HTTP.
   for (const addr of want) if (!states.has(addr)) await subscribePool(addr);
   for (const addr of [...states.keys()]) if (!want.has(addr)) await unsubscribePool(addr);
   db.prepare(`DELETE FROM pool_events_rt WHERE ts < ?`).run(Date.now() - RETENTION_MS);
