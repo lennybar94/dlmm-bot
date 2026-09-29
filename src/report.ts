@@ -24,6 +24,11 @@ function walletRecon(): string | null {
   }
 }
 
+// Date locale YYYY-MM-DD (les clés meta sweep_gains_usd:* sont en jour local depuis 29/09).
+function localDay(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export async function buildDailyReport(): Promise<string> {
   const lines: string[] = [];
   const now = new Date();
@@ -206,19 +211,23 @@ export async function buildDailyReport(): Promise<string> {
     // sweeps de résidus du jour (cumul journalier meta, prix SOL live pour les anciens jours)
     const sweepDay = db
       .prepare(`SELECT value FROM meta WHERE key = ?`)
-      .get(`sweep_gains_usd:${dayStart.toISOString().slice(0, 10)}`) as { value: string } | undefined;
+      .get(`sweep_gains_usd:${localDay(dayStart)}`) as { value: string } | undefined;
     let sweptUsd = sweepDay ? parseFloat(sweepDay.value) || 0 : 0;
     if (!sweepDay) {
       // fallback historique (events sans payload d'avant le 24/09) : parse SOL × prix du jour
       const rows = db
-        .prepare(`SELECT message FROM events WHERE type='residue-sweep' AND created_at >= ?`)
-        .all(t0) as { message: string }[];
+        .prepare(`SELECT message, payload FROM events WHERE type='residue-sweep' AND created_at >= ?`)
+        .all(t0) as { message: string; payload: string | null }[];
       let solSum = 0;
       for (const r of rows) {
-        const m = r.message.match(/\+([0-9.,]+) SOL/);
+        try {
+          const pl = r.payload ? JSON.parse(r.payload) : null;
+          if (pl && (pl.kind === "conversion" || pl.kind === "unverified")) continue; // conversion ≠ gain
+        } catch { /* legacy sans payload → on compte */ }
+        const m = r.message.match(/\+(-?[0-9.,]+) SOL/);
         if (m) solSum += parseFloat(m[1].replace(",", "."));
       }
-      if (solSum > 0) sweptUsd = solSum * ((await getSolPriceUsd()) ?? 194);
+      if (solSum > 0) sweptUsd = solSum * ((await getSolPriceUsd()) ?? 120);
     }
     const netJour = cap + fee + sweptUsd;
     lines.push("=== GAINS NETS DU JOUR ===");

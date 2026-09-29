@@ -185,7 +185,13 @@ for (const h of holdings) {
          last_swap_at=excluded.last_swap_at, last_value_usd=excluded.last_value_usd`
     ).run(`jup-${label}`, "jupiter", Date.now(), usd);
     const msg = `✅ [${new Date().toLocaleTimeString("fr-FR")}] SWEEP JUP ${label}… : ${h.ui.toLocaleString("fr-FR")} tokens → +${gain.toFixed(4)} SOL (sig ${String(sig).slice(0, 12)}…) — gain réalisé en cash`;
-    logEvent("residue-sweep", msg, {});
+    // ⚠️ Garde-vérité 29/09 (leçon « +958$ fantômes ») : ici on CONVERTIT un token
+    // déjà au wallet en SOL — richesse inchangée, PAS un gain. Marqué conversion
+    // pour que les rapports « Gains nets du jour » l'excluent (seuls les sweeps
+    // post-close de résidus réellement gagnés comptent comme profit).
+    logEvent("residue-sweep", msg, {
+      payload: { kind: "conversion", gainSol: Number(gain.toFixed(6)), usdIn: Number(usd.toFixed(2)) },
+    });
     const creds = getTelegramCreds();
     if (creds) await sendTelegram(creds.token, creds.chatId, msg);
     log(`  ✅ +${gain.toFixed(4)} SOL (sig ${String(sig).slice(0, 12)}…)`);

@@ -89,6 +89,11 @@ export async function periodStatsLine(): Promise<string | null> {
 // du jour (valeur finale − dépôt, via dernier mark) + sweeps de résidus du jour.
 // Même convention que src/report.ts et le bloc 1D du dashboard → les trois
 // chiffres racontent la même histoire. null si rien aujourd'hui.
+// Date locale YYYY-MM-DD (les clés meta sweep_gains_usd:* sont en jour local depuis 29/09).
+function localDay(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export async function todayGainsLine(): Promise<string | null> {
   try {
     const { db } = await import("./db.js");
@@ -107,19 +112,23 @@ export async function todayGainsLine(): Promise<string | null> {
     let cap = 0;
     for (const c of closed) cap += (c.pnl ?? 0) - (c.fees ?? 0);
     let swept = 0;
-    const key = `sweep_gains_usd:${dayStart.toISOString().slice(0, 10)}`;
+    const key = `sweep_gains_usd:${localDay(dayStart)}`;
     const row = db.prepare(`SELECT value FROM meta WHERE key=?`).get(key) as { value: string } | undefined;
     if (row) swept = parseFloat(row.value) || 0;
     else {
       const evs = db
         .prepare(`SELECT message FROM events WHERE type='residue-sweep' AND created_at>=?`)
-        .all(t0) as { message: string }[];
+        .all(t0) as { message: string; payload: string | null }[];
       let solSum = 0;
       for (const e of evs) {
-        const m = e.message.match(/\+([0-9.,]+) SOL/);
+        try {
+          const pl = e.payload ? JSON.parse(e.payload) : null;
+          if (pl && (pl.kind === "conversion" || pl.kind === "unverified")) continue; // richesse inchangée, pas un gain
+        } catch { /* pas de payload → on compte */ }
+        const m = e.message.match(/\+(-?[0-9.,]+) SOL/);
         if (m) solSum += parseFloat(m[1].replace(",", "."));
       }
-      if (solSum > 0) swept = solSum * ((await getSolPriceUsd()) ?? 194);
+      if (solSum > 0) swept = solSum * ((await getSolPriceUsd()) ?? 120);
     }
     const net = cap + swept;
     if (!closed.length && !swept) return null;

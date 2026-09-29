@@ -231,7 +231,14 @@ for (const wt of walletTokens) {
     await new Promise((r) => setTimeout(r, 2500));
     const bal1 = (await conn.getBalance(signer.publicKey)) / 1e9;
     const bal2 = (await conn.getBalance(signer.publicKey)) / 1e9;
-    const gainSol = Math.min(bal1, bal2) - solBefore;
+    const gainSolRaw = Math.min(bal1, bal2) - solBefore;
+    // Garde-fou 29/09 (leçon « +958$ fantômes » du 28) : le solde global peut bouger pour
+    // d'autres raisons (claim parallèle, close concurrente, dépôt pilote) sur la fenêtre de
+    // 2 s. On ne déclare un GAIN que si le delta correspond à la quote du swap (±30 %) ;
+    // sinon le montant est marqué unverified et exclu des cumuls de gains.
+    const expectedSol = Number(quote.outAmount.toString()) / 1e9;
+    const plausible = expectedSol > 0 && gainSolRaw > 0 && Math.abs(gainSolRaw - expectedSol) / expectedSol < 0.3;
+    const gainSol = plausible ? gainSolRaw : 0;
     db.prepare(
       `INSERT INTO residue_sweeps (token_key, pool_address, last_swap_at, last_value_usd)
        VALUES (?, ?, ?, ?)
@@ -242,10 +249,18 @@ for (const wt of walletTokens) {
     // dans le récap) : gain_sol converti en $ au prix du tick.
     logEvent("residue-sweep", msg, {
       poolAddress: entry.pool,
-      payload: { gainSol: Number(gainSol.toFixed(6)), gainUsd: Number((gainSol * solUsd).toFixed(2)), symbol: entry.symbol },
+      payload: {
+        gainSol: Number(gainSol.toFixed(6)),
+        gainUsd: Number((gainSol * solUsd).toFixed(2)),
+        symbol: entry.symbol,
+        ...(plausible ? {} : { kind: "unverified", measuredSol: Number(gainSolRaw.toFixed(6)), expectedSol: Number(expectedSol.toFixed(6)) }),
+      },
     });
-    // Cumul journalier (récap « Gains nets du jour », 24/09) : upsert par jour.
-    const day = new Date().toISOString().slice(0, 10);
+    // Cumul journalier (récap « Gains nets du jour ») : upsert par jour LOCAL —
+    // toISOString() est en UTC et décalait le compteur d'un soir à l'autre
+    // (leçon 29/09 : le rapport affichait les sweeps de la veille).
+    const d0 = new Date();
+    const day = `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, "0")}-${String(d0.getDate()).padStart(2, "0")}`;
     db.prepare(
       `INSERT INTO meta (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(meta.value AS REAL) + excluded.value AS TEXT)`
