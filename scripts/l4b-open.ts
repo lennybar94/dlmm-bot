@@ -299,12 +299,12 @@ if (yIsStable) {
       process.exit(1);
     }
     const receivedRaw = after - before;
-    // Dépôt balancé exact : X déjà acheté côté wallet (buyTargetRaw ≥ x0) et Y
-    // stable reçu. Le ratio paper x0/y0 définit le montant Y cohérent avec le X
-    // réellement disponible → on dépose min(nécessaire pour x0, reçu − réserve).
-    const yNeededForX0Raw = BigInt(Math.ceil((x0 / liq.y0) * Number(receivedRaw)));
-    const yReserveRaw = BigInt(Math.floor(Number(receivedRaw) * 0.005)); // 0,5 % marge frais/realloc
-    yDepositRaw = yNeededForX0Raw > receivedRaw ? receivedRaw - yReserveRaw : yNeededForX0Raw;
+    // FIX incident wNEAR 29/09 : le dépôt Y doit être l'INTÉGRALITÉ du budget
+    // stable achetés (moins une petite réserve de frais), pas un ratio paper
+    // entre unités incompatibles. La part X du dépôt proviendra de l'achat 2)
+    // financé par le surplus stable ; on ne touche donc PAS encore ici — la
+    // valeur finale est prise APRÈS l'achat X : solde stable restant complet.
+    yDepositRaw = receivedRaw; // ajusté après l'achat X ci-dessous
     if (yDepositRaw <= 0n) {
       db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
       console.error("⛔ Stable insuffisant pour équilibrer X — AUCUNE ouverture.");
@@ -371,6 +371,26 @@ try {
   process.exit(1);
 }
 
+// 2ter) Verrouillage du dépôt Y stable = solde restant réel après achat X.
+// Garde d'équilibre : la valeur $ du dépôt final (X wallet + Y solde) doit être
+// proche du plan `usd` — sinon on refuse (c'est exactement ce qui manquait lors
+// de l'incident : 100 $ déposés pour un plan de 500 $, sans alerte).
+if (yIsStable) {
+  const decYlock = p.token_y.decimals ?? 6;
+  const stableMintLock = symY === "USDC" ? USDC_MINT : USDT_MINT;
+  const stableLeftRaw = await tokenBalanceOf(conn, signer.publicKey, stableMintLock);
+  const reserveRaw = BigInt(Math.floor(Number(stableLeftRaw) * 0.003)); // 0,3 % coussin realloc/frais
+  yDepositRaw = stableLeftRaw > reserveRaw ? stableLeftRaw - reserveRaw : 0n;
+  const xWalletUi = Number(await tokenBalanceOf(conn, signer.publicKey, xMint)) / 10 ** xDecimals;
+  const depositUsdReal = xWalletUi * p.current_price + Number(yDepositRaw) / 10 ** decYlock;
+  console.log(`2ter) Dépôt vérifié : ${xWalletUi.toLocaleString("fr-FR")} ${xSymbol} + ${(Number(yDepositRaw) / 10 ** decYlock).toLocaleString("fr-FR")} ${symY} ≈ ${depositUsdReal.toFixed(0)}$ (plan ${usd}$)`);
+  if (Math.abs(depositUsdReal - usd) / usd > 0.1) {
+    db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
+    console.error(`⛔ Écart dépôt/plan > 10 % (${depositUsdReal.toFixed(0)} vs ${usd}) — AUCUNE ouverture (garde anti-amputation 29/09).`);
+    process.exit(1);
+  }
+}
+
 // 3) Ouverture balancée (l'opp est reconstruit : hint spot-spread)
 const opp = {
   pool: p,
@@ -381,7 +401,16 @@ const opp = {
 };
 let r;
 try {
-  r = await realOpenPosition(opp, usd, yIsStable ? { yOverrideRaw: yDepositRaw } : {});
+  // Sur pool stable : dépôt = soldes RÉELS du wallet (X complet + Y verrouillé),
+  // passés explicitement — plus aucune re-projection paper (source de l'amputation).
+  let override: { yOverrideRaw?: bigint; xOverrideRaw?: bigint } = {};
+  if (yIsStable) {
+    const xWalletRaw = await tokenBalanceOf(conn, signer.publicKey, xMint);
+    // réserve X 0,5 % (les dusts partiront au sweep post-close)
+    const xReserve = BigInt(Math.floor(Number(xWalletRaw) * 0.005));
+    override = { yOverrideRaw: yDepositRaw, xOverrideRaw: xWalletRaw > xReserve ? xWalletRaw - xReserve : 0n };
+  }
+  r = await realOpenPosition(opp, usd, override);
 } catch (err) {
   db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
   console.error(`⛔ Ouverture échouée : ${String(err)} — inventaire failed (le token reste au wallet, revoir le plan).`);

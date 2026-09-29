@@ -150,7 +150,7 @@ export interface RealOpenResult {
 export async function realOpenPosition(
   opp: OpportunityScore,
   depositUsd?: number,
-  opts: { yOverrideRaw?: bigint } = {}
+  opts: { yOverrideRaw?: bigint; xOverrideRaw?: bigint } = {}
 ): Promise<RealOpenResult> {
   assertPaperOnly("realOpenPosition");
   if (!config.walletPrivateKey) throw new Error("WALLET_PRIVATE_KEY manquant dans .env");
@@ -185,12 +185,13 @@ export async function realOpenPosition(
   // 2) Montants bruts (lamports) avec les decimals réels des deux tokens
   const decX = await decimalsFor(connection, p.token_x.address, p.token_x.decimals);
   const decY = await decimalsFor(connection, p.token_y.address, p.token_y.decimals);
-  const rawX = preset.oneSided === "y" ? 0n : BigInt(Math.floor((liq.x0 ?? 0) * 10 ** decX));
+  let rawX = preset.oneSided === "y" ? 0n : BigInt(Math.floor((liq.x0 ?? 0) * 10 ** decX));
   let rawY = preset.oneSided === "x" ? 0n : BigInt(Math.floor((liq.y0 ?? 0) * 10 ** decY));
-  // Pilote L4-B sur pool stable (TRUMP-USDC…) : le côté Y a été acheté en amont
-  // (swapSolForStable) → on dépose le montant RÉEL en sa devise native (raw UI),
-  // pas la projection SOL de la math paper.
+  // Pilote L4-B sur pool stable (TRUMP-USDC…) : les côtés X et Y ont été achetés
+  // en amont → on dépose les montants RÉELS du wallet (override), pas la
+  // projection SOL de la math paper (source de l'amputation wNEAR 29/09).
   if (opts.yOverrideRaw !== undefined && opts.yOverrideRaw > 0n) rawY = opts.yOverrideRaw;
+  if (opts.xOverrideRaw !== undefined && opts.xOverrideRaw > 0n) rawX = opts.xOverrideRaw;
   if (rawX <= 0n && rawY <= 0n) throw new Error("montants nuls (math) — position non ouverte");
   if (rawX < 0n || rawY < 0n) throw new Error("montants négatifs (math) — position non ouverte");
 
