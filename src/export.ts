@@ -16,14 +16,32 @@ let solPriceCache: { price: number | null; fetchedAt: number } = { price: null, 
 // Jupiter /price/v2 renvoie 404 (endpoint changé, 2026-08) → CoinGecko (1 req/min max avec le cache).
 
 async function fetchSolPriceUsd(): Promise<number | null> {
+  // Source 1 — CoinGecko. ⚠️ 29/09/2026 : 403 Cloudflare systématique depuis
+  // Node/undici (curl passe, pas le fetch natif) → prix SOL null => dry-runs
+  // L4-B bloqués « Prix SOL indisponible » + real-monitor retombe sur 93$.
   try {
     const res = await fetch(
       "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
       { signal: AbortSignal.timeout(8000) }
     );
+    if (res.ok) {
+      const data = (await res.json()) as { solana?: { usd?: number } };
+      const price = Number(data.solana?.usd);
+      if (Number.isFinite(price) && price > 0) return price;
+    }
+  } catch {
+    /* fallback ci-dessous */
+  }
+  // Source 2 (fallback ajoute 29/09) — DeFi Llama, meme unite USD, 200 OK
+  // quand CoinGecko 403 (verifie 29/09 14:15 : 120.07$ confidence 0.99).
+  try {
+    const res = await fetch(
+      "https://coins.llama.fi/prices/current/coingecko:solana",
+      { signal: AbortSignal.timeout(8000) }
+    );
     if (!res.ok) return null;
-    const data = (await res.json()) as { solana?: { usd?: number } };
-    const price = Number(data.solana?.usd);
+    const data = (await res.json()) as { coins?: Record<string, { price?: number }> };
+    const price = Number(data.coins?.["coingecko:solana"]?.price);
     return Number.isFinite(price) && price > 0 ? price : null;
   } catch {
     return null;
