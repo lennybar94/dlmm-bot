@@ -202,7 +202,9 @@ async function autoClose(
 
 export async function realMonitor(): Promise<number> {
   const creds = getTelegramCreds();
-  const solUsd = (await getSolPriceUsd()) ?? 93;
+  const solUsdLive = await getSolPriceUsd();
+  if (!solUsdLive) console.warn("[real-monitor] ⚠️ prix SOL indisponible — fallback 120$ (marks potentiellement biaisés)");
+  const solUsd = solUsdLive ?? 120;
   const rows = db.prepare(`SELECT * FROM real_positions WHERE status = 'open'`).all() as Record<string, any>[];
   if (rows.length === 0) {
     console.log("[real-monitor] aucune position réelle ouverte");
@@ -285,12 +287,26 @@ export async function realMonitor(): Promise<number> {
 
     const decX = Number(pool.token_x?.decimals ?? 6);
     const decY = Number(pool.token_y?.decimals ?? 9);
+    // ⚠️ Échelle du prix Data API (leçon wNEAR-USDC 29/09, faux « +35 k$ ») :
+    // current_price est en SOL par token pour les pools X-SOL, mais en $ USDC
+    // par token pour les pools X-USDC/USDT. L'agrégation valueSol ci-dessous
+    // doit donc convertir côté X dans LA DEVISE DU POOL avant de passer en SOL.
+    const ySymNow = String(pool.token_y?.symbol ?? "").toUpperCase();
+    const yIsStablePool = ySymNow === "USDC" || ySymNow === "USDT";
+    if (yIsStablePool && !(pos.token_y_symbol ?? "").toUpperCase().match(/USDC|USDT/)) {
+      console.warn(`[real-monitor] ${pos.name}: pool stable détecté mais pos marquée ${pos.token_y_symbol} — échelle suspecte`);
+    }
     const amountX = Number(pd.totalXAmount ?? 0) / 10 ** decX; // bruts → unités
     const amountY = Number(pd.totalYAmount ?? 0) / 10 ** decY;
     const feeX = Number(pd.feeX ?? 0) / 10 ** decX;
     const feeY = Number(pd.feeY ?? 0) / 10 ** decY;
-    const valueSol = amountX * price + amountY;
-    const feesSol = feeX * price + feeY;
+    // valeur en $ UI du pool (prix déjà en $ si pool stable), puis conversion $→SOL
+    const valueUsdRaw = yIsStablePool
+      ? amountX * price + amountY
+      : (amountX * price + amountY) * solUsd;
+    const feesUsdRaw = yIsStablePool ? feeX * price + feeY : (feeX * price + feeY) * solUsd;
+    const valueSol = valueUsdRaw / solUsd;
+    const feesSol = feesUsdRaw / solUsd;
     // Référence honnête : le SOL réellement déployé à l'ouverture (amount_y).
     // Le deposit_usd stocké (sizing satsmonkes) est dimensionné sur l'estimateur
     // yUsd du pool (≈87-90) alors que le prix SOL réel est ~93 → écart ~6%.
