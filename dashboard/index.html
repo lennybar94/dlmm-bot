@@ -270,9 +270,13 @@ function render(d) {
 
   // Pilote réel (section en haut — le seul endroit qui compte pour le suivi)
   const real = d.real;
+  // En LAB (export.ts pose lab:true), la section « Pilote réel » est vidée de
+  // ses données : le badge doit dire PAPER, sinon il affiche « Réel · machine »
+  // sur un book fictif et masque les KPI paper (fix 03/10, port 4002).
+  const isLab = !!d.lab || (real && real.summary && real.summary.lab === true);
   // hasReal = le summary existe (toujours en régime réel, même book vide — le
   // cumul PnL/fees depuis le début reste affiché, fix 27/08).
-  const hasReal = !!(real && real.summary);
+  const hasReal = !!(real && real.summary) && !isLab;
   // Badge de mode DYNAMIQUE (fix 24/08) : « Paper only » était statique et
   // trompeur en régime machine réelle (le dashboard affichait 0 partout).
   const modeBadge = $("#modeBadge");

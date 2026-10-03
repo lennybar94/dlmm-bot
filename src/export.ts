@@ -6,7 +6,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 import { db } from "./db.js";
-import { config } from "./config.js";
+import { config, labMode } from "./config.js";
 import { getPortfolioSummary, getOpenPositions } from "./paper.js";
 import { getRules, getRuleChanges } from "./rules.js";
 import { bucketStats } from "./tuner.js";
@@ -408,8 +408,11 @@ export async function exportData(): Promise<string> {
   progression.ALL = { pnl: eqNowV, fees: feesNowV, profit: eqNowV + feesNowV };
 
   // --- Wallet & garde de solde (live RPC, dégradation silencieuse si down) ---
+  // En LAB : JAMAIS de lecture wallet — le lab affiche ses PAPER positions ;
+  // lire le solde du pilote réel exposerait l'adresse réelle sur le port 4002
+  // et pollue Helius d'un getBalance par refresh (fix 03/10).
   let walletFreeSol: number | null = null;
-  try {
+  if (!labMode) try {
     const solana = require("@solana/web3.js") as {
       Connection: new (url: string, c: string) => {
         getBalance: (k: unknown) => Promise<number>;
@@ -600,6 +603,8 @@ export async function exportData(): Promise<string> {
 
   const payload = {
     generated_at: now,
+    lab: labMode, // le front (index.html) adapte son badge : « Réel · machine »
+    // serait un mensonge sur le port du lab paper (fix 03/10).
     summary: getPortfolioSummary(),
     real,
     sol_price_usd: solPriceUsd,
