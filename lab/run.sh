@@ -26,6 +26,13 @@ if [ "${1:-}" = "shell" ]; then
   shift
   exec bash -c "$*"
 fi
-script="${1//:/-}"
+# Script TS : soit un nom npm connu (scan:only → scripts/scan-only.ts), soit un
+# CHEMIN direct relatif au repo (ex. lab/run.sh scripts/lab-init.ts) — requis
+# par les scripts hors mapping cron (lab-init.ts, fix 03/10).
+arg="${1:-}"
 shift || true
+if [[ "$arg" == *.ts ]]; then
+  exec node node_modules/tsx/dist/cli.mjs "$arg" "$@"
+fi
+script="${arg//:/-}"
 exec node node_modules/tsx/dist/cli.mjs "scripts/${script}.ts" "$@"

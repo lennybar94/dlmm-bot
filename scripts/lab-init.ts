@@ -16,7 +16,8 @@ if (!process.env.LAB_MODE) {
   process.exit(1);
 }
 
-const botRoot = path.resolve(__dirname, "..");
+// (repo en "type":"module" → __dirname n'existe pas ; fix 03/10)
+const botRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const srcPath =
   process.env.DLMM_LAB_SRC ?? path.join(botRoot, "data", "dlmm-bot.db");
 const labDbPath = process.env.DLMM_DB_PATH;
