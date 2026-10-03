@@ -1,8 +1,22 @@
+// En LAB, charger lab/.env APRÈS le .env racine : dotenv ne remplace jamais une
+// variable déjà posée dans process.env (run.sh exporte les verrous
+// LAB_MODE/DLMM_DB_PATH → ils priment), et ici lab/.env écrase les valeurs prod
+// pour les clés qu'il définit, SANS toucher au fichier de prod. Sans ce bloc,
+// le lab relisait le .env racine (découvert 03/10 : MAX_POSITIONS/DEPOSIT du
+// lab ignorés).
 import "dotenv/config";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+if (process.env.LAB_MODE === "true") {
+  const labEnv = path.join(__dirname, "..", "lab", ".env");
+  try {
+    const { config: loadEnv } = await import("dotenv");
+    loadEnv({ path: labEnv });
+  } catch { /* lab/.env absent → filtres par défaut du code */ }
+}
 
 function num(key: string, def: number): number {
   const raw = process.env[key];

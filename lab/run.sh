@@ -13,6 +13,11 @@ export NVM_DIR="$HOME/.nvm"
 # shellcheck disable=SC1091
 . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
 nvm use 24 >/dev/null 2>&1
+# ⚠️ PATH des shells Hermes injecte ~/.hermes/tools/node-26 EN TÊTE → nvm ne fait
+# que le déplacer plus bas, `node` reste résolu en v26 (ABI ≠ better-sqlite3,
+# crash ERR_DLOPEN/AMBIGUOUS). Forcer le binaire exact du défaut nvm (fix 03/10).
+NODE_BIN="$(ls -d "$HOME/.nvm/versions/node/v24."*/bin/node 2>/dev/null | sort -V | tail -1)"
+[ -x "$NODE_BIN" ] && export PATH="$(dirname "$NODE_BIN"):$PATH"
 
 # SÉCURITÉ LAB — ces exports priment sur tout .env et verrouillent le mode paper :
 export LAB_MODE=true

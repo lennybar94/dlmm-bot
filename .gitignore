@@ -10,3 +10,5 @@ backups/
 # artefacts du test Jev (archive 24/09)
 lab/.tskey
 lab/jev_run.py
+scripts/tmp-*.ts
+scripts/_archive/
