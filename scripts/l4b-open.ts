@@ -273,7 +273,7 @@ if (yIsStable) {
   const solForStable = yNeedSol * 1.002; // marge slippage quote
   const routePool =
     symY === "USDC"
-      ? process.env.PILOT_USDC_POOL || "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1" // Ray SOL-USDC (depth testée)
+      ? process.env.PILOT_USDC_POOL || "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6" // DLMM SOL-USDC bin_step 4 (~7 M$ TVL) ; remplace le pool Raydium 5Q544... introuvable depuis la migration Meteora (Invalid account discriminator, 03/10)
       : process.env.PILOT_USDT_POOL || "";
   if (!routePool) {
     console.error("⛔ Pas de pool de routage pour acheter USDT — configure PILOT_USDT_POOL.");

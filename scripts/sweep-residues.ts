@@ -237,7 +237,19 @@ for (const wt of walletTokens) {
     // 2 s. On ne déclare un GAIN que si le delta correspond à la quote du swap (±30 %) ;
     // sinon le montant est marqué unverified et exclu des cumuls de gains.
     const expectedSol = Number(quote.outAmount.toString()) / 1e9;
-    const plausible = expectedSol > 0 && gainSolRaw > 0 && Math.abs(gainSolRaw - expectedSol) / expectedSol < 0.3;
+    // ⚠️ Leçon 03/10 (+16 734 $ fantômes) : « plausible » ne suffisait PAS — deux faux
+    // géants (41,86 et 41,89 SOL) ont passé ce test car ils mesuraient une OUVERTURE
+    // concurrente. Double garde : (a) le delta doit être POSITIF, (b) l'écart vs quote
+    // < 30 %, (c) le token balayé doit réellement avoir disparu du wallet.
+    const tokAfterRaw = await conn.getTokenAccountsByOwner(signer.publicKey, { mint: new PublicKey(wt.mint) })
+      .then((r: any) => r.value.reduce((a: bigint, x: any) => a + BigInt(x.account.data.parsed?.info?.tokenAmount?.amount ?? 0), 0n))
+      .catch(() => 0n);
+    const drained = tokAfterRaw === 0n || Number(tokAfterRaw) < Number(wt.raw) * 0.1;
+    const plausible =
+      expectedSol > 0 &&
+      gainSolRaw > 0 &&
+      Math.abs(gainSolRaw - expectedSol) / expectedSol < 0.3 &&
+      drained;
     const gainSol = plausible ? gainSolRaw : 0;
     db.prepare(
       `INSERT INTO residue_sweeps (token_key, pool_address, last_swap_at, last_value_usd)
@@ -247,12 +259,19 @@ for (const wt of walletTokens) {
     const msg = `✅ [${new Date().toLocaleTimeString("fr-FR")}] SWEEP ${entry.symbol} : ${wt.ui.toLocaleString("fr-FR")} tokens → +${gainSol.toFixed(4)} SOL (sig ${sig.slice(0, 12)}…) — gain réalisé en cash`;
     // payload machine-lisible (demandé David 24/09 pour « Gains nets du jour »
     // dans le récap) : gain_sol converti en $ au prix du tick.
+    // ⚠️ Garde 03/10 (leçon « +16 734 $ fantômes ») : balayer un STABLE (USDC/USDT)
+    // ne crée aucune richesse — c'est le capital rendu par une close qu'on convertit
+    // en SOL. Ces montants doivent être exclus des « gains nets », sinon le capital
+    // est recompté en profit à chaque cycle (ici ×16 sur la journée).
+    const symSweep = String(entry.symbol ?? "").toUpperCase();
+    const isStable = symSweep === "USDC" || symSweep === "USDT";
     logEvent("residue-sweep", msg, {
       poolAddress: entry.pool,
       payload: {
         gainSol: Number(gainSol.toFixed(6)),
         gainUsd: Number((gainSol * solUsd).toFixed(2)),
         symbol: entry.symbol,
+        ...(isStable ? { kind: "conversion" } : {}),
         ...(plausible ? {} : { kind: "unverified", measuredSol: Number(gainSolRaw.toFixed(6)), expectedSol: Number(expectedSol.toFixed(6)) }),
       },
     });
