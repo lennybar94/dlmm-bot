@@ -54,6 +54,21 @@ for (const t of tables) {
   console.log(`${t}: ${rows.length} ligne(s) copiée(s).`);
 }
 
+// Le dashboard (export.ts) lit real_marks : cette table est créée par le cron
+// real-monitor en prod, jamais par src/db.ts → en lab elle doit être pré-créée
+// (sinon /api/dashboard.json → 500 « no such table: real_marks » ; leçon 03/10).
+lab.exec(`CREATE TABLE IF NOT EXISTS real_marks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  taken_at INTEGER NOT NULL,
+  position_id INTEGER NOT NULL,
+  price REAL,
+  value_usd REAL,
+  fees_usd REAL,
+  net_pnl_usd REAL,
+  in_range INTEGER
+)`);
+lab.exec(`CREATE INDEX IF NOT EXISTS idx_real_marks_pos ON real_marks(position_id, id)`);
+
 // Snapshot des filtres actifs (traçabilité de l'expérience) : on consigne les
 // valeurs courantes du config lab dans meta.
 const { config } = await import("../src/config.js");
