@@ -270,7 +270,11 @@ let yDepositRaw = 0n; // résolu après l'achat du stable
 if (yIsStable) {
   const stableMint = symY === "USDC" ? USDC_MINT : USDT_MINT;
   const stableDec = p.token_y.decimals ?? 6;
-  const solForStable = yNeedSol * 1.002; // marge slippage quote
+  // Pré-chargement TOTAL go David 04/10 : on achète Y-dépôt + X-budget en un
+  // seul swap SOL→stable. Avant : seule la part Y était financée, et l'achat X
+  // dépendait d'un solde USDC résiduel du wallet → « aucun stable excédentaire »
+  // (14+ rejets des 01-04/10, ex JLP #152 à 09:42 avec wallet USDC ≈ 0).
+  const solForStable = (yNeedSol + buySol) * 1.002; // marge slippage quote
   const routePool =
     symY === "USDC"
       ? process.env.PILOT_USDC_POOL || "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6" // DLMM SOL-USDC bin_step 4 (~7 M$ TVL) ; remplace le pool Raydium 5Q544... introuvable depuis la migration Meteora (Invalid account discriminator, 03/10)
@@ -280,7 +284,7 @@ if (yIsStable) {
     process.exit(1);
   }
   // cible en $ UI = équivalent SOL du dépôt × prixSOL (y0 est en SOL UI)
-  const yTargetUi = y0 * (solUsdForPlan as number);
+  const yTargetUi = (y0 + buySol) * (solUsdForPlan as number); // dépôt Y + budget X
   try {
     const before = await tokenBalanceOf(conn, signer.publicKey, stableMint);
     const rs = await swapSolForStable({
