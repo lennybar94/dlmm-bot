@@ -95,6 +95,7 @@ let skippedNotYOnly = 0;
 let skippedSoldeGuard = 0;
 let skippedStaleSpike = 0;
 let skippedNoHint = 0;
+let skippedGuard = 0;
 
 // Contexte RÉEL créé une seule fois (garde de clé + solde).
 let realCtx: { connection: Connection; signer: Keypair } | null = null;
@@ -255,6 +256,11 @@ for (const row of scanRows) {
       strategyHint: hint,
     };
     const r = openPaperPosition(opp);
+    if (!r.positionId) {
+      skippedGuard++;
+      console.log(`  ⛔ ${row.name} : garde cohérence courbe/bins — ouverture rejetée (voir events).`);
+      continue;
+    }
     console.log(`  Ouvert #${r.positionId}: ${row.name} — ${strategy} (score ${row.score.toFixed(1)})`);
   }
   openAddresses.add(row.pool_address);
@@ -268,7 +274,8 @@ console.log(
     `${skippedBlacklisted ? ` (${skippedBlacklisted} token(s) blacklisté(s) post-close)` : ""}` +
     `${skippedNotYOnly ? ` (${skippedNotYOnly} non Y-only SOL ignoré(s))` : ""}` +
     `${skippedStaleSpike ? ` (${skippedStaleSpike} spike mort(s) — fenêtre fermée, pas d'entrée zombie)` : ""}` +
-    `${skippedSoldeGuard ? ` (${skippedSoldeGuard} skip garde de solde)` : ""}.`
+    `${skippedSoldeGuard ? ` (${skippedSoldeGuard} skip garde de solde)` : ""}` +
+    `${skippedGuard ? ` (${skippedGuard} rejet(s) garde cohérence courbe/bins)` : ""}.`
 );
 
 // Petit état du portefeuille (table RÉELLE en régime réel — cohérent avec le

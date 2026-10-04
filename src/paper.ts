@@ -133,8 +133,37 @@ export function openPaperPosition(opp: OpportunityScore, depositUsd?: number): O
   const depositY = depositUsdFinal / yUsd;
 
   const activeBinId = binIdFromPrice(entryPrice, p.bin_step);
-  const minBinId = hint.minBinId ?? activeBinId - 10;
-  const maxBinId = hint.maxBinId ?? activeBinId + 10;
+  // Le hint vient du SCAN (prix du scan) ; open-paper re-fetch le détail API juste
+  // avant d'ouvrir. Si le prix a bougé entre les deux, un range ancré sur l'ancien
+  // prix place la position HORS range dès l'ouverture (artefact de PnL vu au lab
+  // 04/10 : #3/#4/#7/#16/#18/#27/#28/#36/#39/#40 nées avec entry > bin max).
+  // Règle : recalage sur le prix live quand l'entry tombe hors [min..max], et
+  // recentrage des spot quand le centre du hint est décalé de >50 % du demi-span.
+  let minBinId = hint.minBinId ?? activeBinId - 10;
+  let maxBinId = hint.maxBinId ?? activeBinId + 10;
+  if (activeBinId > maxBinId || activeBinId < minBinId) {
+    const shift = activeBinId - Math.round((minBinId + maxBinId) / 2);
+    minBinId += shift;
+    maxBinId += shift;
+    logEvent(
+      "open",
+      `⚠️ ${p.name} : bins du hint [${hint.minBinId}..${hint.maxBinId}] hors du prix live (bin ${activeBinId}) — range recalé [${minBinId}..${maxBinId}]`,
+      { poolAddress: p.address }
+    );
+  } else if (preset.oneSided === "none") {
+    const center = Math.round((minBinId + maxBinId) / 2);
+    const halfSpan = Math.max(1, Math.round((maxBinId - minBinId) / 2));
+    if (Math.abs(activeBinId - center) > halfSpan * 0.5) {
+      const shift = activeBinId - center;
+      minBinId += shift;
+      maxBinId += shift;
+      logEvent(
+        "open",
+        `⚠️ ${p.name} : centre du hint décalé (${center} vs bin ${activeBinId}) — range recentré [${minBinId}..${maxBinId}]`,
+        { poolAddress: p.address }
+      );
+    }
+  }
   const liq = buildLiquidity({
     depositY,
     price: entryPrice,
@@ -145,6 +174,20 @@ export function openPaperPosition(opp: OpportunityScore, depositUsd?: number): O
   });
   const amountX = liq.x0;
   const amountY = liq.y0;
+
+  // Garde anti-récidive (artefact seed du lab 03/10, vu 04/10) : la valeur sur la
+  // courbe au prix d'entrée doit égaler le dépôt (±5 %). Sinon la position démarre
+  // mécaniquement « en gain » et fausse tout le PnL. Rejet avec log — jamais une
+  // insertion incohérente.
+  const valueAtEntryY = valueInY(liq, entryPrice);
+  if (!(valueAtEntryY > 0) || Math.abs(valueAtEntryY - depositY) / depositY >= 0.05) {
+    logEvent(
+      "open",
+      `⛔ REJET ouverture ${p.name} (${hint.strategy}) : valueY@entry ${valueAtEntryY.toFixed(4)} vs dépôt ${depositY.toFixed(4)} (écart ${((valueAtEntryY / depositY - 1) * 100).toFixed(1)}% ≥ 5%) — courbe incohérente avec les bins`,
+      { poolAddress: p.address }
+    );
+    return { positionId: 0, amountX: 0, amountY: 0, minBinId, maxBinId, entryPrice };
+  }
 
   const info = db
     .prepare(
@@ -569,12 +612,55 @@ export function rebalancePosition(id: number, price: number, valueUsd: number): 
   const newMin = activeBin - halfSpan;
   const newMax = activeBin + halfSpan;
 
+  // Re-projection des montants SUR la courbe au nouveau prix (leçon lab 04/10 :
+  // l'ancien code décalait bins + entry_price sans toucher amount_x/amount_y →
+  // evaluatePosition dérivait un L faux et la valeur explosait — Agency #25 :
+  // 31 rebalances, 1 134 $ marqués pour 500 $ déposés). Le dépôt en Y courant =
+  // valeur USD du mark ÷ yUsd implicite (même conversion que markPosition ;
+  // valueUsd est en USD — le traiter comme du Y créerait un artefact ×yUsd²).
+  const oneSided =
+    pos.amount_x === 0 && pos.amount_y > 0
+      ? "y"
+      : pos.amount_y === 0 && pos.amount_x > 0
+        ? "x"
+        : "none";
+  let depositY: number;
+  if (oneSided === "y") {
+    depositY = pos.amount_y; // SOL intégralement en Y, invariant au recentering
+  } else {
+    // yUsd implicite du dernier mark : last_value_usd = valueY(mark) × yUsd.
+    const markPrice = pos.last_mark_price ?? price;
+    const valueYMark = evaluatePosition(pos, markPrice).valueY;
+    const yUsdImpl = valueYMark > 0 && pos.last_value_usd != null && pos.last_value_usd > 0
+      ? pos.last_value_usd / valueYMark
+      : pos.deposit_usd / Math.max(1e-9, pos.amount_y + pos.amount_x * pos.entry_price);
+    depositY = yUsdImpl > 0 ? valueUsd / yUsdImpl : pos.deposit_usd;
+  }
+  let liq: ReturnType<typeof buildLiquidity>;
+  try {
+    liq = buildLiquidity({
+      depositY,
+      price,
+      minBinId: newMin,
+      maxBinId: newMax,
+      binStep: pos.bin_step,
+      oneSided: oneSided as "none" | "x" | "y",
+    });
+  } catch (e) {
+    logEvent("rebalance", `⚠️ ${pos.name} : re-projection ratée (${String(e)}) — rebalance sauté`, {
+      positionId: id,
+      poolAddress: pos.pool_address,
+    });
+    return;
+  }
+
   db.prepare(
     `UPDATE paper_positions SET min_bin_id = ?, max_bin_id = ?, entry_active_bin = ?, entry_price = ?,
-       day_start_price = ?, last_mark_price = ?, rebalance_count = rebalance_count + 1,
+       day_start_price = ?, last_mark_price = ?, amount_x = ?, amount_y = ?,
+       rebalance_count = rebalance_count + 1,
        last_value_usd = last_value_usd - ?
      WHERE id = ?`
-  ).run(newMin, newMax, activeBin, price, price, price, friction, id);
+  ).run(newMin, newMax, activeBin, price, price, price, liq.x0, liq.y0, friction, id);
   logEvent(
     "rebalance",
     `Rebalance paper sur ${pos.name} : bins [${newMin}..${newMax}] autour du bin ${activeBin} (friction ${friction.toFixed(2)}$)`,
