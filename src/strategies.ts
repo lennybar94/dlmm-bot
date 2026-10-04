@@ -542,5 +542,10 @@ export function binStepPct(binStep: number): number {
  */
 export function binIdFromPrice(price: number, binStep: number): number {
   const base = 1 + binStep / 10_000;
-  return Math.round(Math.log(price) / Math.log(base));
+  // ⚠️ FLOOR (pas ROUND) — leçon lab 04/10 : round place le prix AU-DESSUS du
+  // bin quand la fraction ≥ 0,5 → une bidask-dip ancrée maxBin=active « couvre »
+  // un prix déjà sorti de son range haut (entry > pb par flottants inclus).
+  // Le floor garantit price ≤ pb : le dépôt Y est intégralement projeté dans le
+  // range (valueY@entry = dépôt exact), et le mark garde sa sémantique OOR.
+  return Math.floor(Math.log(price) / Math.log(base));
 }
