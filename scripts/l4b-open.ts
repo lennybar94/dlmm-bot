@@ -321,8 +321,15 @@ if (yIsStable) {
 //   - pool SOL-quoté : swap direct SOL→X dans le pool cible (inchangé).
 //   - pool stable (27/09) : on a acheté USDC en 2bis ; l'achat X se fait donc
 //     USDC→X via le pool cible (même mécanisme DLMM, monnaie d'entrée stable).
+// ⚠️ Mur SOL-USDC du 04/10 (run 10:26) : quand X = wSOL (So1111…), Jupiter
+  // crédite le LAMPORT NATIF du wallet, pas l'ATA wSOL → tokenBalanceOf lisait
+  // « 0 reçu » et rejetait en faux slippage. Mesure par delta de solde natif
+  // pour ce cas ; tout autre token garde la lecture ATA inchangée.
+const xIsNativeSol = xMint.startsWith("So11111111111111111111111111111");
+const balOf = async (): Promise<bigint> =>
+  xIsNativeSol ? BigInt(await conn.getBalance(signer.publicKey)) : await tokenBalanceOf(conn, signer.publicKey, xMint);
 try {
-  const before = await tokenBalanceOf(conn, signer.publicKey, xMint);
+  const before = await balOf();
   let r;
   if (yIsStable) {
     // import dynamique évite une dépendance circulaire potentielle
@@ -357,7 +364,7 @@ try {
     });
   }
   await new Promise((res) => setTimeout(res, 3000));
-  const after = await tokenBalanceOf(conn, signer.publicKey, xMint);
+  const after = await balOf();
   const received = Number(after - before) / 10 ** xDecimals;
   console.log(`2) Achat OK — sig ${r.sig} — reçu ${received.toLocaleString("fr-FR")} ${xSymbol} (cible ≥ ${x0.toLocaleString("fr-FR")})`);
   if (after - before < BigInt(Math.floor(x0 * 10 ** xDecimals))) {
@@ -381,7 +388,7 @@ if (yIsStable) {
   const stableLeftRaw = await tokenBalanceOf(conn, signer.publicKey, stableMintLock);
   const reserveRaw = BigInt(Math.floor(Number(stableLeftRaw) * 0.003)); // 0,3 % coussin realloc/frais
   yDepositRaw = stableLeftRaw > reserveRaw ? stableLeftRaw - reserveRaw : 0n;
-  const xWalletUi = Number(await tokenBalanceOf(conn, signer.publicKey, xMint)) / 10 ** xDecimals;
+  const xWalletUi = Number(await balOf()) / 10 ** xDecimals;
   const depositUsdReal = xWalletUi * p.current_price + Number(yDepositRaw) / 10 ** decYlock;
   console.log(`2ter) Dépôt vérifié : ${xWalletUi.toLocaleString("fr-FR")} ${xSymbol} + ${(Number(yDepositRaw) / 10 ** decYlock).toLocaleString("fr-FR")} ${symY} ≈ ${depositUsdReal.toFixed(0)}$ (plan ${usd}$)`);
   if (Math.abs(depositUsdReal - usd) / usd > 0.1) {
@@ -405,7 +412,7 @@ try {
   // passés explicitement — plus aucune re-projection paper (source de l'amputation).
   let override: { yOverrideRaw?: bigint; xOverrideRaw?: bigint } = {};
   if (yIsStable) {
-    const xWalletRaw = await tokenBalanceOf(conn, signer.publicKey, xMint);
+    const xWalletRaw = await balOf();
     // réserve X 0,5 % (les dusts partiront au sweep post-close)
     const xReserve = BigInt(Math.floor(Number(xWalletRaw) * 0.005));
     override = { yOverrideRaw: yDepositRaw, xOverrideRaw: xWalletRaw > xReserve ? xWalletRaw - xReserve : 0n };
