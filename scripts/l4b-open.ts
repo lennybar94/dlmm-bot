@@ -308,7 +308,13 @@ if (yIsStable) {
     // entre unités incompatibles. La part X du dépôt proviendra de l'achat 2)
     // financé par le surplus stable ; on ne touche donc PAS encore ici — la
     // valeur finale est prise APRÈS l'achat X : solde stable restant complet.
-    yDepositRaw = receivedRaw; // ajusté après l'achat X ci-dessous
+    // ⚠️ FIX 05/10 (TRUMP #213-#219, PENGU #208-#214) : yDepositRaw valait
+    // receivedRaw = INTÉGRALITÉ des USDC achetés → spendable = solde − dépôt ≈ 0
+    // et l'achat X mourait « aucun stable excédentaire ». Le dépôt Y réel doit
+    // être la part stable du budget (yNeedSol SOL × prix $), pas tout le reçu.
+    const planUi = yTargetUi * 10 ** stableDec;
+    const floorYDeposit = BigInt(Math.floor(y0 * (solUsdForPlan as number) * 10 ** stableDec));
+    yDepositRaw = receivedRaw > planUi ? BigInt(planUi) : floorYDeposit;
     if (yDepositRaw <= 0n) {
       db.prepare(`UPDATE pilot_inventory SET status='failed', updated_at=? WHERE mint=? AND status='pending'`).run(Date.now(), xMint);
       console.error("⛔ Stable insuffisant pour équilibrer X — AUCUNE ouverture.");
