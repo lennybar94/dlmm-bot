@@ -312,7 +312,7 @@ if (yIsStable) {
     // receivedRaw = INTÉGRALITÉ des USDC achetés → spendable = solde − dépôt ≈ 0
     // et l'achat X mourait « aucun stable excédentaire ». Le dépôt Y réel doit
     // être la part stable du budget (yNeedSol SOL × prix $), pas tout le reçu.
-    const planUi = yTargetUi * 10 ** stableDec;
+    const planUi = Math.floor(yTargetUi * 10 ** stableDec);
     const floorYDeposit = BigInt(Math.floor(y0 * (solUsdForPlan as number) * 10 ** stableDec));
     yDepositRaw = receivedRaw > planUi ? BigInt(planUi) : floorYDeposit;
     if (yDepositRaw <= 0n) {
