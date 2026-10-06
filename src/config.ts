@@ -14,7 +14,17 @@ if (process.env.LAB_MODE === "true") {
   const labEnv = path.join(__dirname, "..", "lab", ".env");
   try {
     const { config: loadEnv } = await import("dotenv");
-    loadEnv({ path: labEnv });
+    // override:true (fix 06/10) : sans lui dotenv ne REMPLACE jamais une variable
+    // déjà posée par le .env racine → MAX_POSITIONS=20 du lab était écrasé par le
+    // 12 de la prod et le levier ne s'appliquait pas. Les verrous paper de
+    // run.sh (REAL_MODE=false, LAB_MODE, DLMM_DB_PATH) sont re-posés en export
+    // shell APRÈS ce chargement ? NON — ils sont dans process.env avant ; pour
+    // ne jamais les laisser être écrasés par lab/.env, on protège ces clés ici.
+    const PROTECTED = new Set(["LAB_MODE", "DLMM_DB_PATH", "REAL_MODE", "REAL_CONFIRM", "WALLET_PRIVATE_KEY"]);
+    const saved: Record<string, string | undefined> = {};
+    for (const k of PROTECTED) saved[k] = process.env[k];
+    loadEnv({ path: labEnv, override: true });
+    for (const k of PROTECTED) if (saved[k] !== undefined) process.env[k] = saved[k];
   } catch { /* lab/.env absent → filtres par défaut du code */ }
 }
 
