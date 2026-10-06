@@ -217,6 +217,12 @@ if (signer.publicKey.toBase58() !== PILOT) {
   process.exit(1);
 }
 const freeSol = (await conn.getBalance(signer.publicKey)) / 1e9;
+// Plancher de thésaurisation (go David 06/10) : l'ouverture pilote ne peut
+// jamais entamer la réserve native sous WALLET_THESAR_FLOOR_SOL.
+if (config.walletThesarFloorSol > 0 && freeSol - needSol < config.walletThesarFloorSol - 0.005) {
+  console.error(`\n🔒 plancher thésaurisation ${config.walletThesarFloorSol} SOL : libre ${freeSol.toFixed(2)} − besoin ${needSol.toFixed(2)} sous le plancher — pas d'ouverture.`);
+  process.exit(0);
+}
 // Manches book hybride (01/09, go David) : la manche tendance (CE script)
 // dispose de TREND_SLEEVE_SHARE du capital TOTAL ; la manche memes (open-paper)
 // est bornée à (1−share). Garde tendance : déployé tendance + besoin ≤
