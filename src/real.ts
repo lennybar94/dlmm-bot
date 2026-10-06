@@ -167,7 +167,7 @@ export async function realOpenPosition(
   // 1) Mêmes calculs que le paper (math validée par le paper)
   const yUsd = estimateYUsd(p);
   const entryPrice = p.current_price;
-  const depositUsdFinal = depositUsd ?? depositForPool(p);
+  let depositUsdFinal = depositUsd ?? depositForPool(p);
   if (!Number.isFinite(depositUsdFinal) || depositUsdFinal <= 0) throw new Error("dépôt invalide");
   const depositY = depositUsdFinal / yUsd;
   const activeBinIdData = binIdFromPrice(entryPrice, p.bin_step);
@@ -194,6 +194,45 @@ export async function realOpenPosition(
   if (opts.xOverrideRaw !== undefined && opts.xOverrideRaw > 0n) rawX = opts.xOverrideRaw;
   if (rawX <= 0n && rawY <= 0n) throw new Error("montants nuls (math) — position non ouverte");
   if (rawX < 0n || rawY < 0n) throw new Error("montants négatifs (math) — position non ouverte");
+
+  // 2b) Plancher de thésaurisation (go David 06/10) : l'ouverture ne doit
+  // JAMAIS faire passer le solde libre natif sous WALLET_THESAR_FLOOR_SOL.
+  // Le filet se construit donc tout seul : quand le wallet déborde de SOL, le
+  // surplus alimente les pools ; une fois le plancher atteint, plus rien ne
+  // sort et les gains réalisés s'accumulent en natif. 0 = désactivé.
+  if (config.walletThesarFloorSol > 0) {
+    const WSOL_MINT = "So11111111111111111111111111111111111111112";
+    // SOL natif qui sort : côté Y si le pool est X-SOL/WSOL, côté X si le pool
+    // est SOL-Y (acheté en amont par buy-token ex. — rare dans ce chemin).
+    let solOutRaw = 0n;
+    let solSide: "x" | "y" | null = null;
+    if (p.token_y.address === WSOL_MINT) { solOutRaw += rawY; solSide = "y"; }
+    else if (p.token_x.address === WSOL_MINT) { solOutRaw += rawX; solSide = "x"; }
+    const reserve = BigInt(Math.floor(config.walletThesarFloorSol * 1e9));
+    const feeMargin = 5_000_000n; // priority fee + eventuels ATA
+    const freeNow: bigint = BigInt(await (connection as any).getBalance((user as any).publicKey));
+    if (solOutRaw > 0n && solSide) {
+      const projected = freeNow - solOutRaw - feeMargin;
+      if (projected < reserve) {
+        const allowed = freeNow > reserve + feeMargin ? freeNow - reserve - feeMargin : 0n;
+        // dépôt partiel accepté seulement s'il reste ≥ 50 % du dépôt prévu et
+        // ≥ 1 SOL — sinon la position tronquée ne vaut pas son overhead.
+        if (allowed >= 1_000_000_000n && allowed >= solOutRaw / 2n && allowed < solOutRaw) {
+          console.warn(
+            `🔒 plancher ${config.walletThesarFloorSol} SOL : dépôt SOL réduit ${(Number(solOutRaw) / 1e9).toFixed(3)} → ${(Number(allowed) / 1e9).toFixed(3)} SOL`
+          );
+          if (solSide === "y") rawY = allowed; else rawX = allowed;
+          // re-projection cohérente du dépôt $ (log/dashboard) : depositUsdFinal ajusté
+          const removedSol = Number(solOutRaw - allowed) / 10 ** decY;
+          depositUsdFinal -= removedSol * yUsd;
+        } else {
+          throw new Error(
+            `plancher thésaurisation ${config.walletThesarFloorSol} SOL atteint (libre ${(Number(freeNow) / 1e9).toFixed(2)} SOL) — ouverture refusée`
+          );
+        }
+      }
+    }
+  }
 
   // 3) Pool + bin actif on-chain (échelle SDK)
   const pool = await createPool(connection, new PublicKey(p.address), { cluster: config.cluster });

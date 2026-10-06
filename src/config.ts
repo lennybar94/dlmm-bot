@@ -197,6 +197,12 @@ export const config = {
   residueSwapMinUsd: num("RESIDUE_SWAP_MIN_USD", 5),
   residueSwapSlippageBps: num("RESIDUE_SWAP_SLIPPAGE_BPS", 500), // 5 % max
   residueSwapCooldownMin: num("RESIDUE_SWAP_COOLDOWN_MIN", 30), // par token
+  // Plancher de thésaurisation (go David 06/10, simulation octobre) : les
+  // ouvertures ne peuvent jamais entamer la réserve sous ce plancher — le
+  // solde libre au-dessus du plancher seul reste recyclable en pools. Le filet
+  // se construit donc tout seul : chaque gain net réalisé qui ne trouve pas
+  // preneur pour un redéploiement reste en SOL natif. 0 = désactivé (défaut).
+  walletThesarFloorSol: num("WALLET_THESAR_FLOOR_SOL", 0),
 
   // Couverture de dump typée (playbook Tiagogo/MeteoraFR) : le target dépend du
   // profil du token — shitcoin récent pump.fun → -90%, token établi → -60/-70%.

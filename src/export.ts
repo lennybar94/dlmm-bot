@@ -576,6 +576,7 @@ export async function exportData(): Promise<string> {
     }),
     summary: {
       open: realRows.length,
+      thesarFloorSol: config.walletThesarFloorSol,
       investedUsd: realRows.reduce((a, p) => a + Number(p.deposit_usd ?? 0), 0),
       valueUsd: realRows.reduce((a, p) => a + Number(p.value_usd ?? 0), 0),
       netPnlUsd: realRows.reduce((a, p) => a + Number(p.net_pnl_usd ?? 0), 0),
