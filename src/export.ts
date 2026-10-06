@@ -412,7 +412,11 @@ export async function exportData(): Promise<string> {
   // lire le solde du pilote réel exposerait l'adresse réelle sur le port 4002
   // et pollue Helius d'un getBalance par refresh (fix 03/10).
   let walletFreeSol: number | null = null;
-  if (!labMode) try {
+  // LAB : le capital TOTAL est déclaré (constante = libre + déployé de la prod
+  // au relevé) ; le libre en découle après le calcul du déployé, plus bas.
+  const labCapital = labMode && config.labPaperCapitalSol > 0 ? config.labPaperCapitalSol : null;
+  if (!labCapital)
+    try {
     const solana = require("@solana/web3.js") as {
       Connection: new (url: string, c: string) => {
         getBalance: (k: unknown) => Promise<number>;
@@ -440,7 +444,13 @@ export async function exportData(): Promise<string> {
   const deployedMeme = realRows.reduce((a, p) => a + (p.pilot ? 0 : solEquiY(p)), 0);
   const deployedTrend = realRows.reduce((a, p) => a + (p.pilot ? solEquiY(p) : 0), 0);
   const deployedSol = deployedMeme + deployedTrend;
-  const totalSol = walletFreeSol !== null ? walletFreeSol + deployedSol : null;
+  // LAB (option B 06/10) : capital TOTAL constant → le libre suit le déployé.
+  // Sans ça le total du lab grossit avec son book papier et ne peut JAMAIS
+  // coïncider avec la prod (constaté : 88,82 SOL au lieu de 51,74).
+  const totalSol = labCapital !== null
+    ? labCapital
+    : (walletFreeSol !== null ? walletFreeSol + deployedSol : null);
+  if (labCapital !== null && totalSol !== null) walletFreeSol = Math.max(0, totalSol - deployedSol);
   // Manches book hybride (01/09) : guardPct = manche MEMES (open-paper),
   // bornée à 0.8×(1−share)×total — ≥ 1 = manche memes figée (la machine ne
   // peut plus ouvrir tant que des closes ne libèrent pas de la place).

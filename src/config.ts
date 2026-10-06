@@ -214,6 +214,18 @@ export const config = {
   // preneur pour un redéploiement reste en SOL natif. 0 = désactivé (défaut).
   walletThesarFloorSol: num("WALLET_THESAR_FLOOR_SOL", 0),
 
+  // Capital TOTAL du LAB (go David 06/10 : dashboard lab = calque exact prod,
+  // comparaisons identiques). En lab, walletFreeSol était null par construction
+  // (fix 03/10 anti-fuite wallet) → « Capital total », « % de la garde 80 % » et
+  // « budget manche tendance » restaient vides. ⚠️ Le sens est CAPITAL TOTAL, pas
+  // solde libre : un libre figé ne peut pas reproduire le total de la prod (le
+  // déployé s'y ajoute — mesuré 88,82 SOL au lieu de 51,74). À la place :
+  //   totalSol = cette valeur (constante, = libre + déployé de la prod au relevé)
+  //   walletFreeSol = totalSol − déployé papier
+  // Les gardes (0,8 × (1−share) × total) se calculent alors comme en prod.
+  // Aucune lecture RPC, aucune adresse exposée sur le 4002. 0 = désactivé.
+  labPaperCapitalSol: num("LAB_PAPER_CAPITAL_SOL", 0),
+
   // Couverture de dump typée (playbook Tiagogo/MeteoraFR) : le target dépend du
   // profil du token — shitcoin récent pump.fun → -90%, token établi → -60/-70%.
   dipTargetRisky: num("DIP_TARGET_RISKY", 0.9),

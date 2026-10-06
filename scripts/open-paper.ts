@@ -6,10 +6,11 @@
 // (pool_scans, écrit */5 par le monitor) au lieu de re-scanner — le cron
 // horaire à :07 ratait les fenêtres de spike qui durent des minutes.
 import { db, isTokenBlacklisted } from "../src/db.js";
-import { config } from "../src/config.js";
+import { config, labMode } from "../src/config.js";
 import { fetchPool } from "../src/api.js";
 import { openPaperPosition, getOpenPositions, estimateYUsd } from "../src/paper.js";
 import { depositForPool } from "../src/strategies.js";
+import { getSolPriceUsd } from "../src/export.js";
 import { realOpenPosition } from "../src/real.js";
 import type { OpportunityScore, PaperPositionRow, StrategyHint } from "../src/types.js";
 import { Connection, Keypair } from "@solana/web3.js";
@@ -241,6 +242,23 @@ for (const row of scanRows) {
         `(dep ${dep.toFixed(0)}$ · sig ${r.sig.slice(0, 10)}…)`
     );
   } else {
+    // ⚠️ MÊME CONTRAINTE DE WALLET QUE LA MACHINE RÉELLE (fix 06/10) : le wallet
+    // pilote ne détient QUE du SOL — une position balancée (spot/curve) exige des
+    // jetons absents et échouerait on-chain. Le chemin RÉEL applique le filtre
+    // Y-only ; le chemin PAPER ne l'appliquait PAS → le lab se remplissait de
+    // positions (SOL-USDC, ZEC-USDC, JLP-USDC…) que la prod ne peut STRUCTURELLEMENT
+    // pas ouvrir, d'où des books et des PnL incomparables (constat 06/10 : lab 5
+    // positions / 20,79 SOL contre prod 0 / « 20 non Y-only SOL ignorés »).
+    // Sans ce filtre le lab ne mesure pas la même machine.
+    if (labMode) {
+      const ySymCap = (row.token_y_symbol ?? "").toUpperCase();
+      const isOneSidedCap =
+        strategy === "bidask-dip" || strategy === "topblast" || strategy === "resurrect";
+      if (!((ySymCap === "SOL" || ySymCap === "WSOL") && isOneSidedCap)) {
+        skippedNotYOnly++;
+        continue;
+      }
+    }
     let pool;
     try {
       pool = await fetchPool(row.pool_address);
@@ -255,7 +273,46 @@ for (const row of scanRows) {
       signals: [],
       strategyHint: hint,
     };
-    const r = openPaperPosition(opp);
+    // ⚠️ GARDE DE CAPITAL EN PAPER (fix 06/10, calque prod) : la garde de solde
+    // n'existait QUE dans la branche REAL_MODE ci-dessus → en papier le book
+    // déployait sans aucun frein (mesuré : 12 positions / 41,31 SOL / 97 % de la
+    // garde, au-delà des 80 % que la prod n'aurait jamais franchis). Mêmes seuils
+    // que le réel : déployé + projeté ≤ REAL_MAX_DEPLOY_RATIO × (1−share) × capital.
+    // Le capital est celui déclaré en lab (LAB_PAPER_CAPITAL_SOL) ; hors lab, on
+    // retombe sur le déployé papier lui-même (aucun wallet à lire en paper).
+    const depP = Math.min(depositForPool(pool), config.realPositionUsdCap);
+    // Déployé en SOL-équivalent : amount_y est la devise Y du pool (SOL sur X-SOL,
+    // USDC sur X-USDC) — sans conversion les pools stables faussent le total (leçon
+    // wNEAR 29/09, même piège des deux — cf. solEquiY d'export.ts).
+    const ySymP = String(row.token_y_symbol ?? "").toUpperCase();
+    const isStableP = ySymP === "USDC" || ySymP === "USDT";
+    const solPxP = isStableP ? await getSolPriceUsd() : null;
+    const depYP = isStableP && solPxP && solPxP > 0 ? depP / solPxP : depP / estimateYUsd(pool);
+    const deployedP = (
+      db
+        .prepare(
+          `SELECT COALESCE(SUM(CASE WHEN UPPER(COALESCE(token_y_symbol,'')) IN ('USDC','USDT') THEN 0 ELSE amount_y END),0) sol
+                , COALESCE(SUM(CASE WHEN UPPER(COALESCE(token_y_symbol,'')) IN ('USDC','USDT') THEN amount_y ELSE 0 END),0) stable
+           FROM paper_positions WHERE status='open'`
+        )
+        .get() as { sol: number; stable: number }
+    );
+    const deployedEquiv = deployedP.sol + (solPxP && solPxP > 0 ? deployedP.stable / solPxP : deployedP.stable);
+    // Sans capital déclaré (paper hors lab) : garde INACTIVE — comportement
+    // historique préservé. Elle n'a de sens que sur un cadre de capital connu.
+    const totalSolPaper = config.labPaperCapitalSol > 0 ? config.labPaperCapitalSol : null;
+    if (totalSolPaper !== null) {
+      const capitalBookP = totalSolPaper * (1 - config.trendSleeveShare);
+      const maxDeployP = capitalBookP * config.realMaxDeployRatio;
+      if (deployedEquiv + depYP > maxDeployP) {
+        skippedSoldeGuard++;
+        console.log(
+          `  ⛔ ${row.name} : ${depYP.toFixed(2)} SOL projetés → déployé ${deployedEquiv.toFixed(2)} + ${depYP.toFixed(2)} > ${maxDeployP.toFixed(2)} (${(config.realMaxDeployRatio * 100).toFixed(0)}% de ${capitalBookP.toFixed(2)} SOL de capital manche memes — réserve tendance ${(config.trendSleeveShare * 100).toFixed(0)}%) — skip`
+        );
+        continue;
+      }
+    }
+    const r = openPaperPosition(opp, depP);
     if (!r.positionId) {
       skippedGuard++;
       console.log(`  ⛔ ${row.name} : garde cohérence courbe/bins — ouverture rejetée (voir events).`);

@@ -395,6 +395,12 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
       `INSERT INTO real_marks (taken_at, position_id, price, value_usd, fees_usd, net_pnl_usd, in_range)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).run(now, rpId, price, valueUsd, fees, netPnlUsd, ev.inRange ? 1 : 0);
+    // last_value_usd du miroir : le bloc « Value-stop 24 h » et le PnL du dashboard
+    // lisent real_positions.last_value_usd (en prod, real-monitor l'écrit). Sans
+    // cette ligne les closes lab sortaient avec last_value_usd NULL → « perte moy
+    // 0.0 % » et des $NaN. Même valeur que le dernier mark (convention prod).
+    db.prepare(`UPDATE real_positions SET last_value_usd = ?, last_mark_at = ? WHERE id = ?`)
+      .run(valueUsd, now, rpId);
   }
 
   // --- Triggers ---
@@ -622,6 +628,24 @@ export function closePosition(id: number, reason: string, detail = ""): void {
     poolAddress: pos.pool_address,
   });
   reviewPositionOnClose({ ...pos, status: "closed", close_reason: reason, closed_at: Date.now() });
+
+  // Miroir LAB/DASHBOARD (fix 06/10) : markPosition duplique les positions papier
+  // dans real_positions/real_marks pour que la section « Pilote » du dashboard lab
+  // soit identique à la prod. Mais la fermeture ne se propageait QUE si la position
+  // était re-marquée ensuite — or markAll ne marque que les OUVERTES : les closes
+  // restaient « open » dans le miroir → value-stop 24h à 0, PnL cumulé faussé
+  // (les closes continuaient d'être valorisées au marché). Fermeture ici, au moment
+  // du close, comme le fait real-monitor en prod.
+  // Le close réel (src/real.ts) n'utilise JAMAIS cette table en lab (realMode=false).
+  try {
+    const mir = db
+      .prepare(`SELECT id FROM real_positions WHERE position_pubkey = ?`)
+      .get(`PAPER-${id}`) as { id: number } | undefined;
+    if (mir) {
+      db.prepare(`UPDATE real_positions SET status='closed', closed_at=?, close_reason=? WHERE id=?`)
+        .run(pos.closed_at ?? Date.now(), reason, mir.id);
+    }
+  } catch { /* miroir absent (mode prod réel) → rien à faire */ }
 
   // Blacklist post-close (playbook gud, 2026-08-24) : « dead chart = dead
   // position » — si le volume 24h du pool est sous le seuil à la fermeture,
