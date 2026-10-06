@@ -283,7 +283,7 @@ function render(d) {
   // trompeur en régime machine réelle (le dashboard affichait 0 partout).
   const modeBadge = $("#modeBadge");
   if (isLab) {
-    modeBadge.textContent = "💰 PAPER MONEY — LAB (débit ×3-4, verdict 13/10)";
+    modeBadge.textContent = "💰 PAPER MONEY — LAB (calque prod, aucun levier)";
     modeBadge.className = "badge paper";
   } else if (hasReal) {
     modeBadge.textContent = "Réel · machine";
