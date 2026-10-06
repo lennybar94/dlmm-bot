@@ -275,18 +275,25 @@ function render(d) {
   // sur un book fictif et masque les KPI paper (fix 03/10, port 4002).
   const isLab = !!d.lab || (real && real.summary && real.summary.lab === true);
   // hasReal = le summary existe (toujours en régime réel, même book vide — le
-  // cumul PnL/fees depuis le début reste affiché, fix 27/08).
-  const hasReal = !!(real && real.summary) && !isLab;
+  // cumul PnL/fees depuis le début reste affiché, fix 27/08). En LAB, on affiche
+  // AUSSI la section pilote : elle est alimentée par le miroir paper↔réel de
+  // markPosition (go David 06/10 : dashboard lab identique à la prod, PAPER marqué).
+  const hasReal = !!(real && real.summary) && (!isLab || ((real.positions || []).length > 0));
   // Badge de mode DYNAMIQUE (fix 24/08) : « Paper only » était statique et
   // trompeur en régime machine réelle (le dashboard affichait 0 partout).
   const modeBadge = $("#modeBadge");
-  if (hasReal) {
+  if (isLab) {
+    modeBadge.textContent = "💰 PAPER MONEY — LAB (débit ×3-4, verdict 13/10)";
+    modeBadge.className = "badge paper";
+  } else if (hasReal) {
     modeBadge.textContent = "Réel · machine";
     modeBadge.className = "badge ok";
   } else {
     modeBadge.textContent = "Paper only";
     modeBadge.className = "badge paper";
   }
+  const realTitle = document.querySelector("#realSection h2");
+  if (realTitle && isLab) realTitle.innerHTML = '🧪 Pilote <em style="font-style:normal;color:var(--muted);font-size:12px">(PAPER MONEY — montants fictifs, zéro contact wallet)</em> <span class="count" id="realCount">0</span>';
   if (hasReal) {
     const rs = real.summary;
     $("#realSection").style.display = "";

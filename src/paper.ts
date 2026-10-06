@@ -2,13 +2,16 @@
 // Aucune transaction réelle n'est possible ici — PAPER ONLY par construction.
 
 import { db, logEvent, blacklistToken, isBlacklistableToken } from "./db.js";
-import { config } from "./config.js";
+import { config, labMode } from "./config.js";
 import { fetchPool } from "./api.js";
 import { STRATEGY_PRESETS, binIdFromPrice, depositForPool } from "./strategies.js";
 import { coolingOffState, inFeeSurge } from "./volume.js";
 import { getRules } from "./rules.js";
 import { reviewPositionOnClose } from "./review.js";
 import type { MarkResult, OpportunityScore, PaperPositionRow, StrategyName } from "./types.js";
+
+// cache prix SOL pour le miroir lab (markPosition) — évite l'import circulaire export↔paper
+const mirrorSolPriceCache = { price: 0, at: 0 };
 
 /** Prix d'un bin : base^binId avec base = 1 + bin_step/10000. */
 export function binPrice(binId: number, binStep: number): number {
@@ -346,6 +349,53 @@ export async function markPosition(pos: PaperPositionRow): Promise<MarkResult> {
     `INSERT INTO pnl_snapshots (taken_at, position_id, price, value_usd, fees_usd, il_usd, net_pnl_usd, in_range)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(now, pos.id, price, valueUsd, fees, ilUsd, netPnlUsd, ev.inRange ? 1 : 0);
+  // Miroir LAB → section « Pilote » (go David 06/10) : le dashboard du lab
+  // doit être IDENTIQUE à celui de la prod (mêmes KPIs, progression 1D/1W,
+  // value-stop, tableau), juste en paper. Le front lit real_positions/real_marks
+  // pour cette section ; on y duplique les positions papier au fil des marks
+  // (upsert par position_id = id paper). Clé publique fictive préfixée PAPER-.
+  if (labMode) {
+    // prix SOL pour convertir le dépôt en « invested_sol » miroir (cache local,
+    // pas d'import circulaire avec export.ts qui importe paper.js)
+    let solPx = mirrorSolPriceCache.price;
+    if (Date.now() - mirrorSolPriceCache.at > 60_000) {
+      try {
+        const r = await fetch("https://lite-api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5_000) });
+        const j = (await r.json()) as any;
+        const p = Number(j?.results?.["So11111111111111111111111111111111111111112"]?.usdPrice ?? 0);
+        if (p > 0) { mirrorSolPriceCache.price = p; mirrorSolPriceCache.at = Date.now(); }
+      } catch { /* prix stale OK */ }
+      solPx = mirrorSolPriceCache.price;
+    }
+    const existing = db
+        .prepare(`SELECT id FROM real_positions WHERE position_pubkey = ?`)
+        .get(`PAPER-${pos.id}`) as { id: number } | undefined;
+    let rpId = existing?.id;
+    if (!rpId) {
+      const info = db
+        .prepare(
+          `INSERT INTO real_positions
+           (opened_at, pool_address, name, strategy, deposit_usd, position_pubkey, sig,
+            min_bin_id, max_bin_id, bin_step, entry_price, token_x_symbol, token_y_symbol,
+            amount_x, amount_y, status, invested_sol)
+           VALUES (?, ?, ?, ?, ?, ?, 'paper', ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`
+        )
+        .run(
+          pos.opened_at, pos.pool_address, pos.name, pos.strategy, pos.deposit_usd,
+          `PAPER-${pos.id}`, pos.min_bin_id, pos.max_bin_id, pos.bin_step, pos.entry_price,
+          pos.token_x_symbol, pos.token_y_symbol, pos.amount_x, pos.amount_y,
+          solPx > 0 ? pos.deposit_usd / solPx : pos.amount_y
+        );
+      rpId = Number(info.lastInsertRowid);
+    } else if (pos.status === "closed") {
+      db.prepare(`UPDATE real_positions SET status='closed', closed_at=?, close_reason=? WHERE id=?`)
+        .run(pos.closed_at ?? Date.now(), pos.close_reason ?? "paper-close", rpId);
+    }
+    db.prepare(
+      `INSERT INTO real_marks (taken_at, position_id, price, value_usd, fees_usd, net_pnl_usd, in_range)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(now, rpId, price, valueUsd, fees, netPnlUsd, ev.inRange ? 1 : 0);
+  }
 
   // --- Triggers ---
   const isDip = pos.strategy === "bidask-dip";
