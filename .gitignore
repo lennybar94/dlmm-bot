@@ -12,3 +12,12 @@ lab/.tskey
 lab/jev_run.py
 scripts/tmp-*.ts
 scripts/_archive/
+
+# résidus de sessions d'investigation (ménage 07/10 — pattern, plus jamais dans git status)
+_menage-archive-*/
+*.tmp.mjs
+*.tmp.ts
+*.log.tmp
+scripts/_jlp-*
+scripts/_probe-*
+lab/.env.bak-*
