@@ -83,8 +83,8 @@ export function normalizePool(raw: RawPool): Pool {
   const fees24h = numOr(raw.fees?.["24h"]);
   const fees1h = numOr(raw.fees?.["1h"]);
   const fees30m = numOr(raw.fees?.["30m"]);
-  const protocolFeePct = numOr(cfg.protocol_fee_pct, 10);
-  // fee_tvl_ratio est en POURCENTAGE (2.5 = 2.5%) → APR = ratio/100 × 365
+  const protocolFeePct = numOr(cfg.protocol_fee_pct, 10); // défaut 10 : fee protocole DLMM doublé 5%→10% (mai 2026) — l'API renvoie le champ par pool (certains anciens restent à 5), le fallback doit refléter le régime courant
+  // fee_tvl_ratio est en POURCENTAGE (2.5 = 2.5%) → APR net LP = ratio/100 × 365 × (1 − protocol_fee/100)
   const feeApr24h =
     (feeTvlRatio24h / 100) * 365 * (1 - protocolFeePct / 100);
   const created = raw.created_at ? Number(raw.created_at) : null;
