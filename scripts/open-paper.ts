@@ -12,11 +12,17 @@ import { openPaperPosition, getOpenPositions, estimateYUsd } from "../src/paper.
 import { depositForPool } from "../src/strategies.js";
 import { getSolPriceUsd } from "../src/export.js";
 import { realOpenPosition } from "../src/real.js";
+import { memesBookPaused } from "../src/book-pause.js";
 import type { OpportunityScore, PaperPositionRow, StrategyHint } from "../src/types.js";
 import { Connection, Keypair } from "@solana/web3.js";
 
 // Wallet pilote du bot (garde de clé — le .env doit porter CETTE clé).
 const PILOT = config.walletAddress;
+
+// Pause du book memes RÉEL uniquement (décision David 16/10). Le LAB paper est
+// un miroir d'expérience, pas de l'argent réel : il continue de tourner.
+const MEMES_PAUSED = !labMode && memesBookPaused().paused;
+if (MEMES_PAUSED) console.log("⏸ book memes RÉEL en pause (data/book-memes-PAUSE) — ouvertures bidask-dip/spot-spread ignorées");
 
 const args = process.argv.slice(2);
 const limitArg = args.find((a) => a.startsWith("--limit="));
@@ -139,6 +145,12 @@ for (const row of scanRows) {
     continue;
   }
   const strategy = hint.strategy;
+  // Pause du book memes réel (décision David 16/10 : bidask-dip arrêté, preuve
+  // historique + backtests + A/B paper concordantes). Filet pour TOUT appelant.
+  if (MEMES_PAUSED && (strategy === "bidask-dip" || strategy === "spot-spread")) {
+    console.log(`⏸ book memes en PAUSE — ${row.name} [${strategy}] ignoré`);
+    continue;
+  }
   if (strategy === "topblast" || strategy === "resurrect") {
     if (topblastSlots <= 0) {
       skippedTopblastCap++;
