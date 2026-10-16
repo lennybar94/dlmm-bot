@@ -214,6 +214,12 @@ export const config = {
   // preneur pour un redéploiement reste en SOL natif. 0 = désactivé (défaut).
   walletThesarFloorSol: num("WALLET_THESAR_FLOOR_SOL", 0),
 
+  // Manche ladder (portage Claude en réel — PR feat/real-ladder-spot).
+  // Désactivé par défaut : rien n'est actif sans REAL_LADDER=true explicite,
+  // ET la garde data/book-memes-PAUSE bloque même avec le flag (décision David
+  // 16/10 : lever la pause = décision séparée, pas un flag).
+  realLadder: bool("REAL_LADDER", false),
+
   // Capital TOTAL du LAB (go David 06/10 : dashboard lab = calque exact prod,
   // comparaisons identiques). En lab, walletFreeSol était null par construction
   // (fix 03/10 anti-fuite wallet) → « Capital total », « % de la garde 80 % » et
