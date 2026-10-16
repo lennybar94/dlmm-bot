@@ -24,6 +24,8 @@ import {
 } from "../src/strategies.js";
 import { buildLiquidity, estimateYUsd } from "../src/paper.js";
 import { realOpenPosition } from "../src/real.js";
+import { assertBookNotPaused } from "../src/book-pause.js";
+import { labMode } from "../src/config.js";
 import { swapSolForToken, tokenBalanceOf } from "../src/swap.js";
 import { swapSolForStable, USDC_MINT, USDT_MINT } from "../src/swap-stable.js";
 
@@ -32,6 +34,20 @@ const require = createRequire(import.meta.url);
 const { Keypair, PublicKey, Connection } = require("@solana/web3.js") as any;
 
 const PILOT = config.walletAddress;
+
+// Garde de pause du book RÉEL — AVANT tout swap (l4b-open achète le token puis
+// ouvre : une garde seulement dans realOpenPosition laisserait un token acheté
+// sans position). Décision David 16/10 ; le pilote L4-B est spot-spread, il doit
+// être à l'arrêt comme le reste du book tant que la pause est posée.
+if (!labMode) {
+  try {
+    assertBookNotPaused("l4b-open");
+  } catch (e) {
+    console.error(String((e as Error).message));
+    process.exit(0);
+  }
+}
+
 const MINT_RESERVE_PCT = 0.02; // marge slippage sur l'achat (2 %)
 const FEE_BUF_SOL = 0.1; // frais de tx (2 swaps + ouverture)
 const MIN_POOL_AGE_DAYS = 7;

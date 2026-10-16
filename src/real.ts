@@ -11,7 +11,8 @@
 // la racine. Testé en lecture seule sur mainnet (getActiveBin OK).
 
 import { createRequire } from "node:module";
-import { assertPaperOnly, config } from "./config.js";
+import { assertPaperOnly, config, labMode } from "./config.js";
+import { assertBookNotPaused } from "./book-pause.js";
 import type { OpportunityScore } from "./types.js";
 import { STRATEGY_PRESETS, depositForPool } from "./strategies.js";
 import { buildLiquidity, estimateYUsd } from "./paper.js";
@@ -153,6 +154,9 @@ export async function realOpenPosition(
   opts: { yOverrideRaw?: bigint; xOverrideRaw?: bigint } = {}
 ): Promise<RealOpenResult> {
   assertPaperOnly("realOpenPosition");
+  // Filet unique pour TOUT chemin d'ouverture réelle (open-paper, l4b-open, pilote
+  // futur). Point de passage obligatoire : la pause ne se joue plus ici appelant par appelant.
+  if (!labMode) assertBookNotPaused("realOpenPosition");
   if (!config.walletPrivateKey) throw new Error("WALLET_PRIVATE_KEY manquant dans .env");
 
   const sdk = loadSdk();
