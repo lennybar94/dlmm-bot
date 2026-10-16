@@ -245,7 +245,7 @@ export async function realOpenPosition(
   // Range on-chain : les ids SDK ≠ ids Data API (échelle différente), mais le
   // NOMBRE de bins pour un même écart % est invariant. On réplique la STRUCTURE
   // du hint :
-  //  - bidask-dip  : accumulation SOUS le prix → [activeBin − spread, activeBin]
+  //  - bidask-dip / sol-ladder-spot : accumulation SOUS le prix → [activeBin − spread, activeBin]
   //  - bidask-flip : distribution AU-DESSUS      → [activeBin, activeBin + spread]
   //  - autres (spot/curve/topblast) : symétrique → activeBin ± spread/2
   // ⚠️ Limite on-chain (probe sim 2026-08-22) : le programme DLMM exige une
@@ -263,7 +263,7 @@ export async function realOpenPosition(
   }
   let minBinId: number;
   let maxBinId: number;
-  if (hint.strategy === "bidask-dip") {
+  if (hint.strategy === "bidask-dip" || hint.strategy === "sol-ladder-spot") {
     minBinId = activeBin.binId - spread;
     maxBinId = activeBin.binId;
   } else if (hint.strategy === "bidask-flip") {

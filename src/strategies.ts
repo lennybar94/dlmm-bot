@@ -57,6 +57,17 @@ export const STRATEGY_PRESETS: Record<string, StrategyPreset> = {
     oneSided: "y",
     description: "BidAsk SOL-only du prix courant jusqu'à -75% (échelle anti-dump, style LP Army).",
   },
+  // Miroir réel de DLMM Claude : même structure de range que bidask-dip
+  // ([actif − n, actif], SOL seul) mais forme Spot uniforme. La largeur vient
+  // du plan Claude (≤ 69 bins), pas du preset ; montants passés en override.
+  "sol-ladder-spot": {
+    name: "sol-ladder-spot",
+    minBinsPerSide: 4,
+    maxBinsPerSide: 69,
+    sdkStrategy: "Spot",
+    oneSided: "y",
+    description: "Spot SOL-only du bin actif vers le bas — plan DLMM Claude exécuté par le miroir réel.",
+  },
   // Playbook satsmonkes (setup 1 — top blast) : LA stratégie spike du bot,
   // single-sided SOL, range 10-15 bins au total (5-8/côté). « Tu es présent
   // pendant la première jambe haussière d'un memecoin sur du vrai volume, tu

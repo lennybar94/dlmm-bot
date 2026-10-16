@@ -84,6 +84,67 @@ export async function swapSolForToken(opts: {
   };
 }
 
+export interface SwapTokenForSolResult {
+  sig: string;
+  inTokenUi: number; // token réellement consommés (quote)
+  outSol: number; // SOL attendus (quote — vérifier le solde réel après)
+}
+
+/**
+ * Swap token X → SOL via le pool DLMM direct (X→Y) : revente de l'inventaire
+ * d'une position fermée (miroir DLMM Claude). Même chemin que swapSolForToken,
+ * sens inverse. Le montant est en unités brutes (solde réel lu par l'appelant).
+ */
+export async function swapTokenForSol(opts: {
+  poolAddress: string;
+  xMint: string;
+  xDecimals: number;
+  amountRaw: bigint;
+  slippageBps?: number;
+}): Promise<SwapTokenForSolResult> {
+  const slippageBps = opts.slippageBps ?? 300;
+  if (opts.amountRaw <= 0n) throw new Error("amountRaw invalide");
+  const conn = new Connection(config.rpcUrl, "confirmed");
+  const signer = Keypair.fromSecretKey(Buffer.from(config.walletPrivateKey, "base64"));
+  const pool = await create(conn, new PublicKey(opts.poolAddress), { cluster: config.cluster });
+
+  const binArrays = await pool.getBinArrayForSwap(true, 8); // true = X→Y
+  const quote = pool.swapQuote(new BN(opts.amountRaw.toString()), true, new BN(slippageBps), binArrays);
+
+  const tx = await pool.swap({
+    inToken: new PublicKey(opts.xMint),
+    outToken: new PublicKey(SOL_MINT),
+    inAmount: quote.consumedInAmount,
+    minOutAmount: quote.minOutAmount,
+    lbPair: new PublicKey(opts.poolAddress),
+    user: signer.publicKey,
+    binArraysPubkey: quote.binArraysPubkey,
+  });
+  tx.sign(signer);
+  const sig = await conn.sendRawTransaction(tx.serialize(), { maxRetries: 5 });
+
+  let status: { err: unknown; confirmationStatus?: string } | null = null;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const st = await conn.getSignatureStatus(sig).catch(() => null);
+    const v = st?.value;
+    if (v) {
+      status = v;
+      if (v.err) throw new Error(`tx rejetée on-chain : ${JSON.stringify(v.err)}`);
+      if (v.confirmationStatus && v.confirmationStatus !== "processed") break;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  if (!status || (status.confirmationStatus ?? "") === "processed") {
+    throw new Error(`confirmation non obtenue en 60 s (dernier : ${status?.confirmationStatus ?? "inconnu"}) — sig ${sig}`);
+  }
+  return {
+    sig,
+    inTokenUi: Number(quote.consumedInAmount.toString()) / 10 ** opts.xDecimals,
+    outSol: Number(quote.outAmount.toString()) / 1e9,
+  };
+}
+
 /** Solde token d'un wallet (lecture par mint, déterministe — pas d'index RPC). */
 export async function tokenBalanceOf(conn: unknown, wallet: unknown, mint: string): Promise<bigint> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
