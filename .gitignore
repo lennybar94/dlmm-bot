@@ -21,3 +21,8 @@ _menage-archive-*/
 scripts/_jlp-*
 scripts/_probe-*
 lab/.env.bak-*
+
+# bases SQLite locales (jamais versionnées — données, pas code)
+*.db
+*.db-wal
+*.db-shm
