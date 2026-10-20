@@ -26,3 +26,4 @@ lab/.env.bak-*
 *.db
 *.db-wal
 *.db-shm
+lab/.env

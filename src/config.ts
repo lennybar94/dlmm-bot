@@ -79,9 +79,9 @@ export const config = {
   realMode: bool("REAL_MODE", false),
   realConfirm: str("REAL_CONFIRM", ""),
   walletPrivateKey: str("WALLET_PRIVATE_KEY", ""),
-  // Adresse PUBLIQUE du wallet du bot (pilote réel HsstWQz…). Sert au solde
+  // Adresse PUBLIQUE du wallet du bot (sans fonds, aucun secret). Sert au solde
   // libre affiché par le dashboard (getBalance) — jamais de clé ici.
-  walletAddress: str("WALLET_ADDRESS", "HsstWQzA65Zh2DKJTfWP5zkDLaZUi49UrJpbjku2w3az"),
+  walletAddress: str("WALLET_ADDRESS", "11111111111111111111111111111111"),
 
   // Scan / opportunités
   minTvl: num("MIN_TVL", 50_000),

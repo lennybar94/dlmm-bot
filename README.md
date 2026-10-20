@@ -38,7 +38,7 @@ npm run open:paper     # ouvre les positions paper sur les meilleures opportunit
 npm run update:pnl     # mark-to-market des positions
 npm run monitor        # une passe scan + mark ; --loop pour le démon
 npm run report:daily   # rapport quotidien
-npm run dashboard      # http://192.168.1.87:4001 (ouvrir le port dans ufw si besoin)
+npm run dashboard      # http://localhost:4001 (ouvrir le port dans ufw si besoin)
 ```
 
 ## Scripts / crontab suggérés
