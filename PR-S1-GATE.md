@@ -38,22 +38,34 @@ sed -i 's/^MAX_VOL_24H=0\.6$/MAX_VOL_24H=0.12/' .env lab/.env
 grep -n MAX_VOL_24H .env lab/.env     # doit afficher 0.12 partout
 ```
 
-### Garde à la lecture (point 1 de la seconde relecture)
+### Garde à la lecture (points 1 à 3 de la relecture)
 
 `db.ts` ne migre plus, mais lire une base non convertie restait possible : le tuner relit
 `outcome_reviews.vol_24h` pour classer par bande et peut réécrire seul les règles de
-stratégie — sur des σ gonflés ×√24, tout tombait en « élevé ». Ajout :
+stratégie — sur des σ gonflés ×√24, tout tombait en « élevé ».
 
-- `assertSigmaUnitMigrated(qui)` : lève si la base a écrit des lignes avant la coupure du
-  fix (25/10 ~16h30) sans porter le marqueur. Branché sur **scan:only** et **update:rules**.
-- `ensureSigmaUnitMarker()` : sur base neuve/vide (ou dont la dernière écriture est
-  postérieure au fix), pose le marqueur — il n'y a rien à convertir.
-- Repère = `MAX(scanned_at)` de la base, pas un simple compteur de lignes anciennes : une
-  base de travail créée après le 20/10 ne peut pas contenir de σ gonflés (premier essai
-  avec une date seule faisait refuser nos propres copies de test).
+**Le repère est le CONTENU, pas une date.** Un premier essai comparait `MAX(scanned_at)` à
+une coupure calendaire ; il était faux deux fois :
+- `1792500000000` valait **20/10 12:40 UTC**, alors que le commentaire annonçait
+  « 25/10 ~16h30 CET » ; or le dernier scan de l'archive est **20/10 18:35**, donc APRÈS
+  cette coupure → la garde aurait déclaré « rien à convertir » et posé le marqueur sur
+  **711 361 lignes non converties**, la migration refusant ensuite de tourner.
+- même avec la bonne date, une base mixte (anciennes lignes + nouvelles écrites par le
+  code de main après coup) passerait pour neuve.
 
-Vérifié dans les deux sens : copie de l'archive → refus avec message et procédure ; base
-neuve → marqueur posé, démarrage autorisé.
+Règle retenue : marqueur absent **et** au moins une ligne `vol_24h > 0` → refus ; marqueur
+absent et aucune ligne → marqueur posé (base neuve, rien à convertir ; posé avant la
+première écriture, donc jamais refusée ensuite).
+
+Portée : `ensureSigmaUnitMarker()` + `assertSigmaUnitMigrated()` sont appelés **en tête de
+`runScan()` et de `runTune()`**, pas dans les scripts d'entrée. `runScan` a cinq appelants
+(`scan-only`, `scan-pools`, `monitor` — le cron principal —, `real-shadow`, `_pilot-open`) :
+un contrôle par script finirait par en oublier un, et chacun écrirait des lignes au nouveau
+format dans une base ancienne.
+
+Vérifié dans les deux sens : copie de l'archive → refus (« 711361 lignes », message avec la
+sauvegarde et la commande) puis, après `migrate:sigma-unit --confirm-backup` (2,0000 →
+0,4082, 711 361 + 145 lignes), scan autorisé ; base neuve vide → marqueur posé, démarrage OK.
 
 ### La migration n'est plus automatique
 

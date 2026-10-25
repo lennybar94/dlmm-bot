@@ -4,6 +4,7 @@
 // la raison, et au plus un run de tuning par jour.
 
 import { db, logEvent, getMeta, setMeta } from "./db.js";
+import { assertSigmaUnitMigrated } from "./db.js";
 import { config } from "./config.js";
 import { getRules, applyRuleChange, strategyForVolatility } from "./rules.js";
 
@@ -105,6 +106,10 @@ export interface TuneResult {
 
 /** Un run de tuning (gated : échantillon min + 1×/24h). */
 export function runTune(): TuneResult {
+  // Le tuner relit outcome_reviews.vol_24h pour classer par bande : refus d'une
+  // base à l'ancienne échelle (sinon il réécrirait les règles sur des bandes fausses).
+  assertSigmaUnitMigrated("runTune");
+
   const rules = getRules();
   const reviews = allReviews();
   const changes: { key: string; before: string; after: string }[] = [];

@@ -1,7 +1,7 @@
 // Scanner d'opportunités : pools top volume → filtres de sécurité → volatilité →
 // score → signaux + hint de stratégie.
 
-import { db, logEvent } from "./db.js";
+import { assertSigmaUnitMigrated, db, ensureSigmaUnitMarker, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchNewestPools, fetchTopPools } from "./api.js";
 import { realizedVolatility, s1Gate, sigmaIntradayFromScans, type SigmaScanPoint, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, rsi, analyzeTrend, DEFAULT_STRATEGY } from "./strategies.js";
@@ -213,6 +213,12 @@ export function scorePool(
 /** nowMs : horloge injectable pour le test de fumée sur copie figée. La prod appelle
  * runScan() sans argument → Date.now(). */
 export async function runScan(nowMs?: number): Promise<ScanResult> {
+  // Garde d'échelle AVANT toute écriture, mise ici et non dans les scripts d'entrée :
+  // runScan est appelé par scan-only, scan-pools, monitor (cron principal), real-shadow
+  // et _pilot-open — un contrôle par script finirait par en oublier un, et chacun écrirait
+  // alors des lignes au nouveau format dans une base ancienne (base mixte).
+  ensureSigmaUnitMarker();
+  assertSigmaUnitMigrated("runScan");
   const scannedAt = nowMs ?? Date.now();
   const rules = getRules();
   const pools = await fetchTopPools(config.scanTopPools);

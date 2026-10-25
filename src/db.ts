@@ -275,7 +275,7 @@ const SIGMA_MIGRATION_KEY = "sigma_unit_fix_at";
 
 /** État de la base vis-à-vis de l'unité σ (utilisé par le script de migration). */
 export function sigmaUnitStatus(): { migratedAt: number | null } {
-  const row = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(SIGMA_MIGRATION_KEY) as
+  const row = sigmaUnitStatusRaw() as
     | { value: string }
     | undefined;
   return { migratedAt: row ? Number(row.value) : null };
@@ -285,7 +285,7 @@ export function sigmaUnitStatus(): { migratedAt: number | null } {
 export function migrateSigmaUnit(opts: { confirmedBackup: boolean }): { ok: boolean; message: string } {
   if (!opts.confirmedBackup)
     return { ok: false, message: "Refusé : sauvegarde du fichier .env/DB non confirmée (--confirm-backup)." };
-  const cur = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(SIGMA_MIGRATION_KEY) as { value: string } | undefined;
+  const cur = sigmaUnitStatusRaw() as { value: string } | undefined;
   if (cur) return { ok: false, message: `Déjà migré (${cur.value}) — aucun traitement.` };
   const cut = Date.now();
   const sq = Math.sqrt(24);
@@ -305,51 +305,53 @@ export function migrateSigmaUnit(opts: { confirmedBackup: boolean }): { ok: bool
   return { ok: true, message: `vol_24h divisé par √24 — lignes traitées ${rows}, marqueur ${cut}.` };
 }
 
-// ── Garde d'échelle sur les données lues (audit PR #3, point 1) ──
-// Les seuils de bande sont en σ journalier DIRECT depuis le fix √24. Une base contenant
-// des lignes ANTÉRIEURES à la conversion stocke encore le σ gonflé ×√24 : le tuner
-// (volBand) et les buckets d'évidence (export.ts) classeraient alors presque tout en
-// « élevé » et pourraient réécrire seuls les règles de stratégie sur des bandes fausses.
-// La migration ne partant plus toute seule, il faut refuser de LIRE ces bases-là.
-// Repère de ligne ancienne : un scan antérieur à la coupure du marqueur (ou l'absence
-// totale de marqueur avec des lignes présentes). Sur une base neuve et vide, on pose le
-// marqueur : il n'y a rien à convertir.
-// Repère temporel : les σ GONFLÉS ont été produits par dlmm-bot de fin août au 20/10
-// (archivage). Une base dont la dernière écriture est postérieure n'a rien pu stocker
-// d'ancien — c'est le cas des bases de travail créées après coup. La date de coupure ne
-// suffit donc pas, il faut la comparer à l'activité réelle de la base.
-const SIGMA_CUTOFF_TS = 1792500000000; // époque du fix (25/10 ~16h30 CET), figée volontairement
-
-/** true si la base a pu écrire des volatilités sur l'ancienne échelle. */
-function wroteLegacySigma(): boolean {
-  const last = (db.prepare(`SELECT MAX(scanned_at) m FROM pool_scans`).get() as { m: number | null }).m;
-  if (last === null || last === undefined) return false; // vide → rien à convertir
-  return last < SIGMA_CUTOFF_TS;
+// ── Garde d'échelle sur les données LUES (audit PR #3, points 1 à 3) ──
+// Les seuils de bande sont en σ journalier DIRECT depuis le fix √24. Une base qui
+// contient encore des vol_24h gonflés ×√24 ferait classer presque tout en « élevé » par
+// le tuner, qui peut réécrire seul les règles de stratégie. La migration ne partant plus
+// toute seule, il faut refuser de LIRE ces bases-là.
+//
+// ⚠️ Le repère est le CONTENU, jamais une date. Deux raisons, toutes deux mesurées :
+//   · la coupure du premier essai (1792500000000) valait en réalité 20/10 12:40 UTC, alors
+//     que le commentaire annonçait « 25/10 ~16h30 CET » ; et le dernier scan de l'archive
+//     est 20/10 18:35, donc APRÈS cette coupure → la garde aurait déclaré « rien à
+//     convertir » et posé le marqueur sur 711 361 lignes non converties.
+//   · une date ne dit pas si une base est convertie : après une exécution accidentelle du
+//     code de main, d'anciennes ET de nouvelles lignes coexistent, toutes gonflées.
+// Règle : marqueur absent + au moins une ligne vol_24h > 0 → REFUS. Marqueur absent +
+// aucune ligne → on pose le marqueur (base neuve : rien à convertir, et il est posé avant
+// la première écriture, donc elle ne sera jamais refusée ensuite).
+/** Lecture directe du marqueur (SIGMA_MIGRATION_KEY est déclaré plus bas dans le fichier). */
+function sigmaUnitStatusRaw(): { value: string } | undefined {
+  return db.prepare(`SELECT value FROM meta WHERE key = 'sigma_unit_fix_at'`).get() as { value: string } | undefined;
 }
 
-/** true si la base contient des volatilités de l'ANCIENNE échelle non converties. */
+/** true si la base contient des volatilités non converties (échelle gonflée ×√24). */
 export function sigmaUnitNeedsMigration(): boolean {
-  if (sigmaUnitStatus().migratedAt !== null) return false;
-  return wroteLegacySigma();
+  if (sigmaUnitStatusRaw() !== undefined) return false;
+  const rows = db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number };
+  return rows.c > 0;
 }
 
-/** Marqueur auto sur base neuve (rien à convertir) — appelé par les entrées qui lisent vol_24h. */
+/** Sur base vide uniquement : pose le marqueur, puisqu'il n'y a rien à convertir. */
 export function ensureSigmaUnitMarker(): void {
-  if (sigmaUnitStatus().migratedAt !== null) return;
-  if (!sigmaUnitNeedsMigration()) {
+  if (sigmaUnitStatusRaw() !== undefined) return;
+  const rows = db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number };
+  if (rows.c === 0) {
     setMeta(SIGMA_MIGRATION_KEY, String(Date.now()));
-    setMeta("sigma_unit_note", "base sans lignes anciennes : marqueur posé sans conversion");
+    setMeta("sigma_unit_note", "base sans aucune volatilité stockée : marqueur posé sans conversion");
   }
 }
 
-/** Refuse de tourner sur une base dont le vol_24h est sur l'ancienne échelle. */
+/** Refuse de lire/écrire sur une base dont le vol_24h est sur l'ancienne échelle. */
 export function assertSigmaUnitMigrated(who: string): void {
   if (!sigmaUnitNeedsMigration()) return;
+  const rows = (db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number }).c;
   throw new Error(
-    `[ÉCHELLE σ] ${who} refuse de démarrer : cette base contient des vol_24h de l'ANCIENNE ` +
-      `échelle (σ gonflé ×√24) et le marqueur meta '${SIGMA_MIGRATION_KEY}' est absent. ` +
-      `Le tuner classifierait ces lignes dans de fausses bandes et pourrait réécrire les ` +
-      `règles de stratégie dessus. Sauvegarder puis convertir :\n` +
+    `[ÉCHELLE σ] ${who} refuse de démarrer : cette base contient ${rows} lignes de vol_24h ` +
+      `sur l'ANCIENNE échelle (σ gonflé ×√24) et le marqueur meta '${SIGMA_MIGRATION_KEY}' est ` +
+      `absent. Le tuner classifierait ces lignes dans de fausses bandes et pourrait réécrire ` +
+      `les règles de stratégie dessus. Sauvegarder puis convertir :\n` +
       `  cp <db> <db>.pre-s1-$(date +%Y%m%d-%H%M)\n` +
       `  npm run migrate:sigma-unit -- --confirm-backup\n` +
       `(DLMM_DB_PATH actuel : ${process.env.DLMM_DB_PATH ?? "défaut data/dlmm-bot.db"})`
