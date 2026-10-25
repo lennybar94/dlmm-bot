@@ -3,7 +3,13 @@
 // 0 position depuis le 25/08 tout en écrivant les scans dont dépendent open:paper,
 // real-monitor (fee-decline), accel-monitor, earlywatch et le dashboard).
 import { runScan } from "../src/scanner.js";
-import { logEvent } from "../src/db.js";
+import { assertSigmaUnitMigrated, ensureSigmaUnitMarker, logEvent } from "../src/db.js";
+
+// Garde d'échelle (audit PR #3) : refuser de scanner une base dont le vol_24h est sur
+// l'ancienne échelle — sinon le tuner apprendrait sur des bandes fausses. Base neuve et
+// vide → marqueur posé sans conversion.
+ensureSigmaUnitMarker();
+assertSigmaUnitMigrated("scan:only");
 
 // --now=<epoch ms> : horloge du test de fumée (copie de base figée dans le temps). La prod
 // n'utilise pas cet argument.

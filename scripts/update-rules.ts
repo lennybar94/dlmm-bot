@@ -1,7 +1,13 @@
 // Boucle d'apprentissage : reviews hebdo + auto-réglage des règles : `npm run update:rules`
 import { config } from "../src/config.js";
 import { runWeeklyReviews } from "../src/review.js";
+import { assertSigmaUnitMigrated } from "../src/db.js";
 import { runTune } from "../src/tuner.js";
+
+// Le tuner relit outcome_reviews.vol_24h pour classer par bande : refuser une base dont
+// ces valeurs sont sur l'ancienne échelle (σ gonflé ×√24) — sinon il réécrirait les règles
+// de stratégie sur des bandes fausses. (audit PR #3, point 1)
+assertSigmaUnitMigrated("update:rules");
 import { getRules, getRuleChanges } from "../src/rules.js";
 
 const weekly = runWeeklyReviews(config.weeklyReviewDays);

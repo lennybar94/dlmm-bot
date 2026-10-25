@@ -327,8 +327,7 @@ export async function runScan(nowMs?: number): Promise<ScanResult> {
       // presque rien. Mesurer σ(X/$) serait donc le mauvais objet — et diviser la série par
       // le SOL (ce que faisait la version précédente) donne r(X/$) − 2·r(SOL/$), qui ne
       // correspond à rien : c'est ce qui faisait passer SOL-USDC de 4 % à 11 %/j.
-      // Conséquence : AUCUNE conversion n'est appliquée ; seule reste la question de savoir
-      // si le quote est un actif dont le prix bouge (voir refus ci-dessous).
+      // Conséquence : AUCUNE conversion n'est appliquée à aucune pool — série brute partout.
       let s1: { ok: boolean; reason?: string; r24?: number; r1h?: number; sigma?: number; n?: number; w?: number } | null = null;
       if (config.s1GateEnabled) {
         const sinceMs = scannedAt - config.s1SigmaWindowHours * 3_600_000;
@@ -337,7 +336,7 @@ export async function runScan(nowMs?: number): Promise<ScanResult> {
         }[];
         // Série BRUTE : current_price est le prix natif de la paire (voir l'unité plus haut),
         // donc c'est exactement l'objet que σ doit décrire pour CETTE pool. Aucune conversion,
-        // aucun appariement à un autre quote, aucun refus « unité non établie », pas de
+        // aucun appariement à un autre quote, pas de
         // plafond de σ ajouté (W clampé à 0,25 au-delà de ~2,8 %/j ⇒ R = 0,5·f/σ² : il
         // faudrait ~84 %/j de frais pour atteindre 2,5 à σ = 41 %/j — la formule rejette déjà).
         const pts: SigmaScanPoint[] = series

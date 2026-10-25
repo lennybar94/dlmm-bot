@@ -38,6 +38,23 @@ sed -i 's/^MAX_VOL_24H=0\.6$/MAX_VOL_24H=0.12/' .env lab/.env
 grep -n MAX_VOL_24H .env lab/.env     # doit afficher 0.12 partout
 ```
 
+### Garde à la lecture (point 1 de la seconde relecture)
+
+`db.ts` ne migre plus, mais lire une base non convertie restait possible : le tuner relit
+`outcome_reviews.vol_24h` pour classer par bande et peut réécrire seul les règles de
+stratégie — sur des σ gonflés ×√24, tout tombait en « élevé ». Ajout :
+
+- `assertSigmaUnitMigrated(qui)` : lève si la base a écrit des lignes avant la coupure du
+  fix (25/10 ~16h30) sans porter le marqueur. Branché sur **scan:only** et **update:rules**.
+- `ensureSigmaUnitMarker()` : sur base neuve/vide (ou dont la dernière écriture est
+  postérieure au fix), pose le marqueur — il n'y a rien à convertir.
+- Repère = `MAX(scanned_at)` de la base, pas un simple compteur de lignes anciennes : une
+  base de travail créée après le 20/10 ne peut pas contenir de σ gonflés (premier essai
+  avec une date seule faisait refuser nos propres copies de test).
+
+Vérifié dans les deux sens : copie de l'archive → refus avec message et procédure ; base
+neuve → marqueur posé, démarrage autorisé.
+
 ### La migration n'est plus automatique
 
 `db.ts` ne convertit plus rien à l'import : lancer un dashboard, un rapport ou le
