@@ -24,6 +24,32 @@ sqlite3 data/dlmm-bot.db "SELECT * FROM meta WHERE key='sigma_unit_fix_at'"
 Retour arrière = restaurer le fichier sauvegardé. Jamais de migration sur l'archive
 d'origine sans copie : les tests de cette PR ont tous tourné sur des copies.
 
+### Conversion des `.env` existants (bloquant 2 de la relecture)
+
+Les `.env` du serveur et `lab/.env` peuvent encore contenir `MAX_VOL_24H=0.6`, l'ancienne
+valeur calibrée sur le σ gonflé. Depuis le fix, σ est plafonné à 2/√24 ≈ 0,408 : un 0,6 ne
+rejetterait plus **aucune** pool. `config.ts` refuse désormais de démarrer dans ce cas
+(message « ancienne échelle, diviser par √24 »), donc le problème ne peut pas passer en
+silence — mais il faut convertir les fichiers :
+
+```bash
+# dans chaque .env (serveur ET lab)
+sed -i 's/^MAX_VOL_24H=0\.6$/MAX_VOL_24H=0.12/' .env lab/.env
+grep -n MAX_VOL_24H .env lab/.env     # doit afficher 0.12 partout
+```
+
+### La migration n'est plus automatique
+
+`db.ts` ne convertit plus rien à l'import : lancer un dashboard, un rapport ou le
+real-monitor sur la mauvaise base suffisait à déclencher la conversion irréversible.
+Commande explicite, qui refuse sans sauvegarde confirmée et ne fait rien si le marqueur
+`sigma_unit_fix_at` existe déjà :
+
+```bash
+cp data/dlmm-bot.db data/dlmm-bot.db.pre-s1-$(date +%Y%m%d-%H%M)
+npm run migrate:sigma-unit -- --confirm-backup
+```
+
 ## Les 4 commits, dans l'ordre de relecture
 
 **1. `fix(sigma)` — σ journalier direct.** `realizedVolatility` ne multiplie plus par √24
