@@ -28,6 +28,8 @@ export interface ReviewRow {
   rebalance_count: number;
   fee_tvl_ratio_24h: number | null;
   vol_24h: number | null;
+  sigma_intraday?: number | null;
+  s1_r24?: number | null;
   bin_step: number | null;
   launchpad: string | null;
   pool_age_days: number | null;
@@ -38,7 +40,7 @@ export interface ReviewRow {
 function entryFeatures(poolAddress: string, openedAt: number) {
   const row = db
     .prepare(
-      `SELECT fee_tvl_ratio_24h, vol_24h, bin_step, launchpad, pool_age_days, tvl
+      `SELECT fee_tvl_ratio_24h, vol_24h, sigma_intraday, s1_r24, bin_step, launchpad, pool_age_days, tvl
        FROM pool_scans WHERE pool_address = ?
        ORDER BY ABS(scanned_at - ?) ASC LIMIT 1`
     )
@@ -46,6 +48,8 @@ function entryFeatures(poolAddress: string, openedAt: number) {
     | {
         fee_tvl_ratio_24h: number | null;
         vol_24h: number | null;
+        sigma_intraday: number | null;
+        s1_r24: number | null;
         bin_step: number | null;
         launchpad: string | null;
         pool_age_days: number | null;
@@ -89,8 +93,8 @@ export function insertReview(pos: PaperPositionRow, reviewType: "closed" | "week
        (position_id, review_type, reviewed_at, pool_address, name, strategy, opened_at, closed_at,
         age_days, deposit_usd, value_usd, fees_usd, il_usd, net_pnl_usd, net_pnl_pct,
         exit_reason, in_range_pct, rebalance_count,
-        fee_tvl_ratio_24h, vol_24h, bin_step, launchpad, pool_age_days, tvl)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        fee_tvl_ratio_24h, vol_24h, sigma_intraday, s1_r24, bin_step, launchpad, pool_age_days, tvl)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       pos.id,
@@ -113,6 +117,8 @@ export function insertReview(pos: PaperPositionRow, reviewType: "closed" | "week
       pos.rebalance_count,
       feat?.fee_tvl_ratio_24h ?? null,
       feat?.vol_24h ?? null,
+      feat?.sigma_intraday ?? null,
+      feat?.s1_r24 ?? null,
       feat?.bin_step ?? null,
       feat?.launchpad ?? null,
       feat?.pool_age_days ?? null,
@@ -147,6 +153,8 @@ export function insertReview(pos: PaperPositionRow, reviewType: "closed" | "week
     rebalance_count: pos.rebalance_count,
     fee_tvl_ratio_24h: feat?.fee_tvl_ratio_24h ?? null,
     vol_24h: feat?.vol_24h ?? null,
+    sigma_intraday: feat?.sigma_intraday ?? null,
+    s1_r24: feat?.s1_r24 ?? null,
     bin_step: feat?.bin_step ?? null,
     launchpad: feat?.launchpad ?? null,
     pool_age_days: feat?.pool_age_days ?? null,
