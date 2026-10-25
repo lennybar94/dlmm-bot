@@ -103,7 +103,9 @@ export function getRuleChanges(limit = 25): {
 
 /** Stratégie à utiliser selon la volatilité journalière (règles apprises). */
 export function strategyForVolatility(volDaily: number, rules = getRules()): string {
-  if (volDaily < 0.1) return rules.strategyByVol.low;
-  if (volDaily < 0.3) return rules.strategyByVol.mid;
+  // Fix 25/10 : seuils = anciens 0,1/0,3 ÷ √24 EXACTEMENT (pas 0,02/0,06 arrondis :
+  // 0,02×√24 = 0,098 ≠ 0,1 — l'arrondi ferait basculer de bande les σ entre les deux).
+  if (volDaily < 0.1 / Math.sqrt(24)) return rules.strategyByVol.low;
+  if (volDaily < 0.3 / Math.sqrt(24)) return rules.strategyByVol.mid;
   return rules.strategyByVol.high;
 }

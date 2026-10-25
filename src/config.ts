@@ -88,7 +88,7 @@ export const config = {
   minVolume24h: num("MIN_VOLUME_24H", 10_000),
   minFeeTvlRatio24h: num("MIN_FEE_TVL_RATIO_24H", 0.02), // % (2 = 2%)
   minPoolAgeDays: num("MIN_POOL_AGE_DAYS", 1),
-  maxVol24h: num("MAX_VOL_24H", 0.6), // σ journalière max (60 %/j) — protège les petits gains de l'IL
+  maxVol24h: num("MAX_VOL_24H", 0.12), // fix 25/10 : 0,12 = même garde qu'avant 0,6 sur σ gonflé ×√24
   scanTopPools: num("SCAN_TOP_POOLS", 150),
   apiRequestDelayMs: num("API_REQUEST_DELAY_MS", 120),
   apiMaxRetries: num("API_MAX_RETRIES", 3),

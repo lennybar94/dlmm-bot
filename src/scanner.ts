@@ -108,7 +108,10 @@ export function scorePool(
   // pénalité ne s'applique qu'aux stratégies spot/curve où l'IL détruit les
   // gains. (Résout la contradiction scan-admet/score-pénalise.)
   const sigmaTolerant = strategy === "bidask-dip" || strategy === "topblast" || strategy === "resurrect";
-  const volPenalty = vol24h > 1.2 && !sigmaTolerant ? rules.volPenalty : 0; // volatilité extrême
+  // Fix 25/10 : seuil ÷√24 exact (unité σ daily directe). Périmètre sigmaTolerant
+  // CONSERVÉ — c'est la porte S1 (commit suivant) qui ferme le trou des stratégies
+  // « tolérantes », pas cette pénalité (effets attribuables à une seule cause).
+  const volPenalty = vol24h > 1.2 / Math.sqrt(24) && !sigmaTolerant ? rules.volPenalty : 0; // volatilité extrême
 
   let score =
     (rules.wApr / 100) * Math.min(1, aprLog / 3) * 100 +
@@ -150,7 +153,7 @@ export function scorePool(
   // Profil réflexif (Lamsito_eth/$NET) : APR délirant + σ extrême = ponzinomics
   // — le yield peut être réel TANT QUE la demande tient, mais l'unwind est
   // violent si elle meurt (émissions dynamiques/premium absents côté DLMM).
-  if (p.fee_apr_24h >= 500 && vol24h >= 1.5)
+  if (p.fee_apr_24h >= 500 && vol24h >= 1.5 / Math.sqrt(24)) // fix 25/10 : unité σ daily directe
     signals.push(`⚠️ profil réflexif (ponzinomics) : APR ${p.fee_apr_24h.toFixed(0)}% + σ ${(vol24h * 100).toFixed(0)}%/j — unwind violent si la demande meurt`);
   if (p.launchpad) signals.push(`launchpad: ${p.launchpad}`);
   if (p.farm_apr > 10) signals.push(`farm APR ${p.farm_apr.toFixed(0)}%`);

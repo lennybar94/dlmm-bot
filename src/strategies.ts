@@ -239,11 +239,23 @@ export function binsForDumpTarget(target: number, binStep: number): number {
   return Math.max(1, Math.min(config.maxDipBins, bins));
 }
 
-/** Volatilité réalisée journalière (log-returns, écart-type × √24 pour 1h→24h). */
+/** Volatilité réalisée journalière. ⚠️ Fix 25/10 (NOTES-20261025 §2-1) : l'OHLCV Data API
+ * ne renvoie que 10 bougies DAILY (interval ignoré, vérifié 25/08 — cf. commentaire du RSI).
+ * L'ancien code les traitait en horaires et multipliait par √24 → σ surestimé ×4,9. Les
+ * bougies étant déjà daily, l'écart-type des log-returns est DIRECTEMENT le σ journalier ;
+ * le √24 est supprimé. Réglages calibrés sur le σ gonflé divisés d'autant (MAX_VOL_24H
+ * 0,6→0,12, seuils strategyForVolatility, mapping binsPerSide ×√24) — comportement
+ * identique, valeurs honnêtes. */
+const SIGMA_FALLBACK = 0.1 / Math.sqrt(24); // = 0,1 de l'ANCIENNE échelle (σ gonflé ×√24)
+
 export function realizedVolatility(candles: OhlcvCandle[]): number {
-  if (candles.length < 3) return 0.1;
+  // ⚠️ Le repli « pas assez de bougies » valait 0,1 sur l'échelle GONFLÉE → il doit être
+  // converti comme tout le reste, sinon un pool sans OHLCV bascule de bande : 0,1 reste
+  // au-dessus du seuil mid/high (0,3/√24 ≈ 0,061) et le fait classer « high » alors qu'il
+  // l'était « mid » avant. Trouvé par le test d'équivalence main↔branche (DacityCoin-SOL).
+  if (candles.length < 3) return SIGMA_FALLBACK;
   const closes = candles.map((c) => c.close).filter((c) => c > 0);
-  if (closes.length < 3) return 0.1;
+  if (closes.length < 3) return SIGMA_FALLBACK;
   const returns: number[] = [];
   for (let i = 1; i < closes.length; i++) {
     returns.push(Math.log(closes[i] / closes[i - 1]));
@@ -251,9 +263,8 @@ export function realizedVolatility(candles: OhlcvCandle[]): number {
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
   const variance =
     returns.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, returns.length - 1);
-  const sigmaHourly = Math.sqrt(variance);
-  // 1h → 24h (√24), plafonné pour éviter les absurdités
-  return Math.min(2.0, sigmaHourly * Math.sqrt(24));
+  // bougies DAILY → écart-type = σ journalière directe (plafond converti : 2,0/√24 ≈ 0,41)
+  return Math.min(2.0 / Math.sqrt(24), Math.sqrt(variance));
 }
 
 /**
@@ -412,7 +423,9 @@ export function supertrend(
  * Vol élevée → range large (survit aux mouvements), vol faible → range serré (plus de frais).
  */
 export function binsPerSideForVolatility(volDaily: number, preset: StrategyPreset): number {
-  const volPct = volDaily * 100;
+  // Fix 25/10 : mapping ×√24 — le σ est désormais daily direct ; le calibrage d'origine
+  // (« vol 2 % → serré ») supposait le σ gonflé ×√24 du bug. Comportement identique.
+  const volPct = volDaily * 100 * Math.sqrt(24);
   // mapping: vol 2% → serré, vol 30%+ → large
   const target = Math.round((volPct / 2.2) * 1.15);
   const lo = preset.minBinsPerSide;

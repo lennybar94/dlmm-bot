@@ -33,10 +33,11 @@ function feeBand(v: number | null): string {
 }
 
 function volBand(v: number | null): string {
+  // Fix 25/10 : seuils ÷√24 exacts ; labels en σ daily réel (≈2 % / ≈6 %).
   if (v === null) return "inconnu";
-  if (v < 0.1) return "bas (<10%)";
-  if (v < 0.3) return "moyen (10-30%)";
-  return "élevé (>30%)";
+  if (v < 0.1 / Math.sqrt(24)) return "bas (<2%)";
+  if (v < 0.3 / Math.sqrt(24)) return "moyen (2-6%)";
+  return "élevé (>6%)";
 }
 
 /** Statistiques d'un bucket (n, PnL moyen, frais moyens, meilleure stratégie). */
@@ -149,11 +150,12 @@ export function runTune(): TuneResult {
   // 2) Stratégie par bande de volatilité : basculer vers la meilleure observée.
   for (const band of ["low", "mid", "high"] as const) {
     const key = `strategyByVol.${band}` as const;
-    const label = band === "low" ? "bas (<10%)" : band === "mid" ? "moyen (10-30%)" : "élevé (>30%)";
+    const label = band === "low" ? "bas (<2%)" : band === "mid" ? "moyen (2-6%)" : "élevé (>6%)";
     const stat = bucketStats((r) => volBand(r.vol_24h), reviews).find((b) => b.band.startsWith(label.split(" ")[0]));
     if (!stat || stat.n < 5 || !stat.bestStrategy) continue;
     const current = strategyForVolatility(
-      band === "low" ? 0.05 : band === "mid" ? 0.2 : 0.5,
+      // Points d'échantillonnage dans la MÊME unité que les seuils (÷√24) — fix 25/10.
+      band === "low" ? 0.05 / Math.sqrt(24) : band === "mid" ? 0.2 / Math.sqrt(24) : 0.5 / Math.sqrt(24),
       rules
     );
     if (stat.bestStrategy !== current && stat.avgPnlPct > 0) {

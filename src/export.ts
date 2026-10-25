@@ -680,9 +680,10 @@ function buildLearningExport() {
   const volBands = bucketStats(
     (r) => {
       if (r.vol_24h === null) return "inconnu";
-      if (r.vol_24h < 0.1) return "bas (<10%)";
-      if (r.vol_24h < 0.3) return "moyen (10-30%)";
-      return "élevé (>30%)";
+      // Fix 25/10 : seuils ÷√24 exacts, labels en σ daily réel.
+      if (r.vol_24h < 0.1 / Math.sqrt(24)) return "bas (<2%)";
+      if (r.vol_24h < 0.3 / Math.sqrt(24)) return "moyen (2-6%)";
+      return "élevé (>6%)";
     },
     reviews
   );
