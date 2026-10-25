@@ -251,6 +251,27 @@ export function getMeta(key: string): string | null {
   return row ? row.value : null;
 }
 
+// ── Migration d'UNITÉ (fix 25/10, étape 2/4) ──
+// pool_scans.vol_24h et outcome_reviews.vol_24h historiques sont sur l'échelle GONFLÉE ×√24
+// (bougies DAILY traitées en horaires). Les seuils étant désormais en σ daily direct, un
+// ancien 0,15 serait classé « > 6 % » au lieu de « moyen » : le tuner apprendrait sur des
+// bandes fausses. Division UNE SEULE FOIS par √24, idempotente via meta.
+// ⚠️ IRRÉVERSIBLE sur la base touchée : sauvegarder le fichier AVANT la première exécution
+// (procédure dans la PR). Le code de main relit mal une base déjà migrée.
+if (!getMeta("sigma_unit_fix_at")) {
+  const cut = Date.now();
+  const sq = Math.sqrt(24);
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE pool_scans SET vol_24h = vol_24h / ? WHERE scanned_at < ? AND vol_24h IS NOT NULL AND vol_24h > 0`
+    ).run(sq, cut);
+    db.prepare(
+      `UPDATE outcome_reviews SET vol_24h = vol_24h / ? WHERE reviewed_at < ? AND vol_24h IS NOT NULL AND vol_24h > 0`
+    ).run(sq, cut);
+    setMeta("sigma_unit_fix_at", String(cut));
+  })();
+}
+
 export function logEvent(
   type: string,
   message: string,
