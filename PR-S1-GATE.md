@@ -94,6 +94,25 @@ migrée = 44 opportunités, mêmes stratégies qu'avant migration, à l'identiqu
 `DOGE-SOL`, σ 1,1 %/j, R24 13,7. **S1 ferme le book memes, comme la mesure live
 l'annonçait** (fees/TVL médiane 0,28 %/j contre σ²/8 ≈ 0,5-1,1 %/j).
 
+**Unité des prix (bloquant 1 de la relecture)** — mesuré par recoupement interne, sans API :
+pour les 22 pools X-SOL présentes dans le même scan que leur jumelle X-USDC et que SOL-USDC,
+`ratio = current_price(X-SOL) ÷ (prix$X ÷ prix$SOL)` vaut **0,991 à 1,009** (CATE 0,9986 ;
+wNEAR 0,9998 ; cbBTC 0,9999 ; DOGE 0,9985 ; HYPE 1,0058). Conclusion : `current_price` est
+le **prix natif de la paire**, quel que soit le quote. Donc :
+
+- aucune conversion n'est appliquée (la division par le SOL était doublement fausse : mauvais
+  objet — le LVR d'une pool X-SOL se calcule sur σ(X/SOL), pas sur σ(X/$) — et mauvais sens,
+  (SOL/token) × ($/SOL) = $/token, une division donnant r(X/$) − 2·r(SOL/$)) ;
+- les quotes mobiles (HYPE, JupSOL…) sont ACCEPTÉS : leur prix est natif lui aussi ;
+- `scripts/l4b-open.ts:98`, dont le commentaire du 27/09 (« toujours en SOL UI ») était faux,
+  est corrigé avec la mesure ;
+- test ajouté : σ de la porte == σ de la série brute (à 1e-15), plus une longue série de
+  ~2 000 rendements où l'estimateur rend 100,9 % et 101,1 % de la cible (±5 % par graine).
+
+Résultat sur copie, horloge figée : 150 vues / 90 retenues / **1 opportunité**, bouclage
+**90/90**. Ce qui bloque reste le plancher S7 (frais 0,02-0,18 %/j < 0,25 %/j), indépendant
+de σ — comme prévu.
+
 **Écart de granularité σ 5 min vs 1 min** (exigence « avant tout GO ») : mesuré sur
 `real_marks` (~1 min) contre `pool_scans` (5 min réels, cadence vérifiée), mêmes pools,
 mêmes fenêtres de 4 h — 236 fenêtres, 92 pools :

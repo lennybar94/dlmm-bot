@@ -95,10 +95,16 @@ const activeBinId = binIdFromPrice(p.current_price, p.bin_step);
 const hint = buildStrategyHint(p, activeBinId, vol, "spot-spread", p.current_price, candles);
 const symY0 = (p.token_y.symbol ?? "").toUpperCase();
 const yIsStablePlan = symY0 === "USDC" || symY0 === "USDT";
-// ⚠️ Échelle vérifiée 27/09 (dry-run TRUMP-USDC → « prix 2,11 SOL/TRUMP ») :
-// current_price est TOUJOURS en SOL UI, y compris sur les pools X-USDC. La math
-// paper reste donc en SOL UI (depositY inchangé) ; seul le PAIEMENT du côté Y
-// diffère : y0 SOL d'équivalent → achetés en USDC au prix SOL-$ du jour.
+// ⚠️ Échelle — le commentaire du 27/09 (« TOUJOURS en SOL UI, y compris X-USDC », issu
+// d'un dry-run TRUMP-USDC) est FAUX pour les pools à quote stable, et la porte S1 l'a
+// fait passer pour bon. Mesuré le 25/10 par recoupement interne sur la base d'archive
+// (22 pools X-SOL comparées à leur jumelle X-USDC et à SOL-USDC dans le même scan, ratio
+// 0,991-1,009) : current_price est le PRIX NATIF DE LA PAIRE — $/token sur X-USDC
+// (SOL-USDC 105,4 ; JUP-USDC 0,314), SOL/token sur X-SOL. Donc la lecture « prix 2,11
+// SOL/TRUMP » du dry-run était en fait 2,11 $/TRUMP.
+// Conséquence ici : la math paper en SOL UI reste correcte puisque depositY est un ratio
+// de VALEUR ; seul le paiement du côté Y diffère (y0 SOL d'équivalent achetés en USDC au
+// prix SOL-$ du jour).
 // depositY est en unités de la devise Y (estimateYUsd ≈ 1$ pour un stable).
 // La math paper travaille en SOL UI → conversion $→SOL indispensable ici, sinon
 // le dépôt est surdimensionné d'un facteur prixSOL (bug dry-run SKHY 27/09).

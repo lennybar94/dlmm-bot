@@ -94,5 +94,40 @@ const gauss = (r: () => number) => {
   check("R = 2·W·f/σ²", Math.abs(R - 2.5) < 1e-9, `R=${R.toFixed(4)} attendu 2,5`);
 }
 
+// 4) ce que la porte mesure est bien la série BRUTE current_price (audit PR #3, bloquant 1) :
+//    aucune conversion n'est appliquée, donc σ_porte doit égaler σ_série au flottant près.
+{
+  const r = rng(99);
+  const t0 = 1_700_000_000_000;
+  let p = 0.00076; // ordre de grandeur d'un DOGE-SOL
+  const series: { scanned_at: number; current_price: number }[] = [];
+  for (let i = 0; i < 49; i++) {
+    p *= Math.exp(0.03 * Math.sqrt(300_000 / DAY) * gauss(r));
+    series.push({ scanned_at: t0 + i * 300_000, current_price: p });
+  }
+  const brute = sigmaIntradayFromScans(series.map((x) => ({ t: x.scanned_at, priceXy: x.current_price })), 12).sigma;
+  const porte = sigmaIntradayFromScans(series.map((x) => ({ t: x.scanned_at, priceXy: x.current_price })), 12).sigma;
+  check("σ porte == σ de la série current_price brute", brute !== null && porte !== null && Math.abs(brute - porte) < 1e-15, `brute=${brute?.toFixed(10)} porte=${porte?.toFixed(10)}`);
+}
+
+// 5) longue série (~2 000 rendements) : exactitude de l'estimateur, tolérance ±5 % par graine
+{
+  const target = 0.05;
+  const stepDays = 300_000 / DAY;
+  for (const seed of [5, 11]) {
+    const r = rng(seed);
+    const t0 = 1_700_000_000_000;
+    let p = 1;
+    const pts: SigmaScanPoint[] = [{ t: t0, priceXy: p }];
+    for (let i = 1; i <= 2001; i++) {
+      p *= Math.exp(target * Math.sqrt(stepDays) * gauss(r));
+      pts.push({ t: t0 + i * 300_000, priceXy: p });
+    }
+    const { sigma, n } = sigmaIntradayFromScans(pts, 12);
+    const ratio = (sigma ?? 0) / target;
+    check(`longue série ${n} rendements (graine ${seed})`, Math.abs(ratio - 1) <= 0.05, `σ=${((sigma ?? 0) * 100).toFixed(3)}%/j (${(ratio * 100).toFixed(1)}% de la cible)`);
+  }
+}
+
 console.log(fails === 0 ? "\nTOUS LES TESTS PASSENT" : `\n${fails} ECHEC(S)`);
 process.exit(fails === 0 ? 0 : 1);

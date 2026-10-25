@@ -51,36 +51,14 @@ function passesFilters(p: Pool, rules: RuleSet): { ok: boolean; reason: string }
  * fixes de l'API (30m/1h) sont trop lentes pour voir un démarrage tôt).
  * Retourne { delta, minutes } ou null si pas d'historique / delta incohérent.
  */
-// Série σ de la porte S1 : prix archivés sur la fenêtre. Borne haute <= scannedAt : la
-// ligne du tour courant n'existe pas encore (INSERT en fin de run) donc pas de doublon en
-// prod ; sur copie figée, un point à Δt≈0 est ignoré par l'estimateur.
-// Borne haute STRICTEMENT < scannedAt : sur une copie figée où plusieurs runs partagent
-// le même timestamp, les lignes d'un run précédent doivent être écartées (rendements à
-// Δt=0 et fausse fraîcheur). En prod le tour courant n'a pas encore inséré sa ligne : <
-// ou <= reviennent au même, donc le choix sûr est <.
+// Série σ de la porte S1 : prix natifs archivés de la pool sur la fenêtre. Borne haute
+// strictement < scannedAt : en prod la ligne du tour courant n'est pas encore insérée, et
+// sur une copie figée où plusieurs runs partagent le même timestamp, écarter les lignes
+// d'un run précédent évite les rendements à Δt=0 et une fausse idée de la fraîcheur.
 const sigmaSeriesStmt = db.prepare(
   `SELECT scanned_at, current_price FROM pool_scans
    WHERE pool_address = ? AND scanned_at >= ? AND scanned_at < ? AND current_price > 0 ORDER BY scanned_at`
 );
-// Prix SOL ($/SOL) par timestamp, pour RAMENER les séries X-SOL à un prix natif X/$.
-// ⚠️ La table pool_scans ne stocke PAS les montants x/y des pools : le prix natif X/Y
-// n'est donc pas reconstruisable a posteriori sur l'historique — seule la division par
-// le SOL du même scan dépollue le quote. Sans cette étape, σ(X-SOL) = √(σ²_token + σ²_SOL),
-// soit ~5,6× trop gros pour un token calme (σ_SOL ≈ 4 %/j).
-// Prix SOL ($/SOL) par timestamp : pools dont le token X est SOL et le quote Y est une
-// stable (c'est là que current_price est en $/SOL — vérifié sur la base archive :
-// SOL-USDC ≈ 105). Le filtre se fait sur les SYMBOLES, pas sur le nom : le nom de l'API
-// peut être inversé (USDC-SOL) alors que le mapping X/Y reste SOL d'un côté.
-// Liste des quotes stables : littéral SQL DÉLIBÉRÉ (pas une interpolation de Set). Une
-// concaténation de valeurs dans un prepared statement ouvrirait une injection à chaque
-// futur ajout dans STABLES — le set TS et ce littéral doivent rester synchronisés.
-const solSeriesStmt = db.prepare(
-  `SELECT scanned_at, MAX(current_price) current_price FROM pool_scans
-   WHERE UPPER(token_x_symbol) = 'SOL' AND UPPER(token_y_symbol) IN ('USDC','USDT','USDG','USD1','SUSDE')
-     AND scanned_at >= ? AND scanned_at < ? AND current_price > 0
-   GROUP BY scanned_at ORDER BY scanned_at`
-);
-
 const prevScanStmt = db.prepare(
   `SELECT scanned_at, volume_24h FROM pool_scans
    WHERE pool_address = ? AND scanned_at < ? AND volume_24h > 0
@@ -335,101 +313,43 @@ export async function runScan(nowMs?: number): Promise<ScanResult> {
       // dernier scan archivé : S1 juge le régime courant. Moins de 12 rendements → REFUS DUR
       // (§8 : un filtre de sécurité à données manquantes refuse ; l'historique total ne dit
       // rien du régime des 4 dernières heures). Aucune exception, même au premier lancement.
-      // UNITÉ (bloquant 1, audit PR #3) — mesuré sur la base archive, pas supposé :
-      //   · X-SOL : current_price en SOL/token (wNEAR-SOL 0,0083, ANSEM-SOL 0,0000002)
-      //     → le σ brut mélange token et SOL : σ²_observé = σ²_token + σ²_SOL. À 4 %/j de
-      //       SOL, un token calme à 2 %/j ressort à 4,5 %/j : ×2,2, R divisé par 2,2.
-      //     → corrigé en divisant CHAQUE point par le prix SOL DU MÊME SCAN (et non par
-      //       celui du jour : multiplier toute une série par une constante laisse les
-      //       log-rendements, donc σ, strictement inchangés — c'était le no-op reproché).
-      //   · X-USDC/X-USDT : current_price en $/token (SOL-USDC 105,4 ; JUP-USDC 0,314 ;
-      //     wNEAR-USDC 4,88) → prix déjà rapporté au dollar, aucune correction.
-      //     ⚠️ Cela contredit le commentaire de scripts/l4b-open.ts:98 (« TOUJOURS en SOL
-      //     UI, y compris X-USDC »), qui date du dry-run TRUMP-USDC du 27/09. Ce qui compte
-      //     ici est la valeur stockée, relevée pool par pool ci-dessus.
-      //   · quote autre (HYPE, JupSOL…) : unité non établie → REFUS, principe §8.
-      // Limites connues : pool_scans ne stocke pas les montants x/y, donc pas de prix natif
-      // X/Y reconstruisable ; et un LST contre SOL (KMNO-JupSOL) est refusé alors que son
-      // quote est quasi stable — acceptable, S1 doit laisser passer SOL-USDC et les paires
-      // à stable, pas maximiser le nombre d'entrées.
+      // UNITÉ — mesuré sur la base d'archive, pas supposé : current_price est TOUJOURS le
+      // prix NATIF de la paire (quote par token), quel que soit le quote. Preuve par
+      // recoupement interne, sans API : pour 22 pools X-SOL présentes dans le même scan que
+      // leur jumelle X-USDC et que SOL-USDC, le ratio stocké/(prix$X ÷ prix$SOL) vaut
+      // 0,991 à 1,009 (CATE 0,9986 ; wNEAR 0,9998 ; cbBTC 0,9999 ; DOGE 0,9985…). Donc :
+      //   · X-SOL  → SOL/token (prix natif X/SOL)
+      //   · X-USDC → $/token  (prix natif X/USDC)
+      //   · SOL-USDC → $/SOL
+      // C'est exactement ce que demande §8 : le LVR d'une pool se calcule sur le σ du prix
+      // QUE CETTE POOL EXPLOITE. Dans une pool X-SOL, un arbitrageur qui pousse X/SOL vers
+      // le haut achète du X contre du SOL ; si X et SOL montent ensemble, la pool ne perd
+      // presque rien. Mesurer σ(X/$) serait donc le mauvais objet — et diviser la série par
+      // le SOL (ce que faisait la version précédente) donne r(X/$) − 2·r(SOL/$), qui ne
+      // correspond à rien : c'est ce qui faisait passer SOL-USDC de 4 % à 11 %/j.
+      // Conséquence : AUCUNE conversion n'est appliquée ; seule reste la question de savoir
+      // si le quote est un actif dont le prix bouge (voir refus ci-dessous).
       let s1: { ok: boolean; reason?: string; r24?: number; r1h?: number; sigma?: number; n?: number; w?: number } | null = null;
       if (config.s1GateEnabled) {
         const sinceMs = scannedAt - config.s1SigmaWindowHours * 3_600_000;
         const series = sigmaSeriesStmt.all(p.address, sinceMs, scannedAt) as {
           scanned_at: number; current_price: number;
         }[];
-        const symY = (p.token_y?.symbol ?? "").toUpperCase();
-        const symX = (p.token_x?.symbol ?? "").toUpperCase();
-        const STABLES = new Set(["USDC", "USDT", "USDG", "SUSDE", "USD1"]);
-        // Pool de prix lui-même (SOL contre stable, dans un sens comme dans l'autre) :
-        // son σ EST celui du SOL, rien à dépolluer.
-        const isSolVsStable =
-          (symX === "SOL" && STABLES.has(symY)) || (symY === "SOL" && STABLES.has(symX));
-        let pts: SigmaScanPoint[] = [];
-        if (isSolVsStable || STABLES.has(symY)) {
-          // prix déjà rapporté au dollar : σ = σ du token, aucune correction nécessaire.
-          pts = series.map((r) => ({ t: r.scanned_at, priceXy: r.current_price })).filter((x) => x.priceXy > 0);
-          if (p.current_price > 0) pts.push({ t: scannedAt, priceXy: p.current_price });
-        } else if (symY === "SOL" && symX !== "SOL") {
-          // X-SOL : current_price est en SOL/token. Le σ brut vaut √(σ²_token + σ²_SOL).
-          // Dépollution par RAPPORT GLISSANT : chaque point divisé par le prix SOL du même
-          // timestamp ; les deux séries étant échantillonnées au même horodatage, le
-          // facteur SOL se téléscope dans le log-rendement et il ne reste que σ_token.
-          // (Diviser par un prix SOL qui bouge entre deux points — notamment le snapshot
-          // live du tour courant — réintroduit précisément le bruit qu'on veut ôter : vu au
-          // test, SOL-USDC passait de 4 % à 11 %/j pour ce seul motif.)
-          const solRows = solSeriesStmt.all(sinceMs, scannedAt) as { scanned_at: number; current_price: number }[];
-          // Appariement au plus proche dans une tolérance de 10 min : les pools ne sont pas
-          // relévées exactement aux mêmes secondes (et une pool peut manquer un scan), donc
-          // l'égalité stricte de timestamp laissait des trous.
-          const TOL_MS = 10 * 60_000;
-          const solAt = (t: number): number | null => {
-            let best: number | null = null;
-            let bestDt = Infinity;
-            for (const r of solRows) {
-              const dt = Math.abs(r.scanned_at - t);
-              if (dt < bestDt) { bestDt = dt; best = r.current_price; }
-            }
-            return best !== null && bestDt <= TOL_MS ? best : null;
-          };
-          const paired = series
-            .map((r) => {
-              const sol = solAt(r.scanned_at);
-              return sol && sol > 0 ? { t: r.scanned_at, priceXy: r.current_price / sol } : null;
-            })
-            .filter((x): x is SigmaScanPoint => x !== null && x.priceXy > 0);
-          if (paired.length < config.s1SigmaMinReturns + 1) {
-            rejected.push({ pool: p, reason: `S1 unité non établie : paires pool/SOL insuffisantes (${paired.length})` });
-            continue;
-          }
-          pts = paired;
-          // Snapshot live : apparié au dernier prix SOL connu (≤ 10 min), pas un prix d'un
-          // autre jour — sinon deux échelles de SOL se mélangent dans la même série.
-          const solNow = solAt(scannedAt);
-          if (p.current_price > 0 && solNow && solNow > 0 && Math.abs(scannedAt - (solRows[solRows.length - 1]?.scanned_at ?? 0)) <= TOL_MS)
-            pts.push({ t: scannedAt, priceXy: p.current_price / solNow });
-        } else {
-          // Quote exotique (HYPE, JupSOL…) : impossible d'établir si le prix stocké est
-          // en $ ou en unités du quote → le σ pourrait mélanger deux actifs. En cas de
-          // doute la porte refuse (§8), avec un motif qui se lit sur le dashboard.
-          rejected.push({ pool: p, reason: `S1 unité non établie : quote ${symY || "?"} (ni SOL, ni stable)` });
-          continue;
-        }
+        // Série BRUTE : current_price est le prix natif de la paire (voir l'unité plus haut),
+        // donc c'est exactement l'objet que σ doit décrire pour CETTE pool. Aucune conversion,
+        // aucun appariement à un autre quote, aucun refus « unité non établie », pas de
+        // plafond de σ ajouté (W clampé à 0,25 au-delà de ~2,8 %/j ⇒ R = 0,5·f/σ² : il
+        // faudrait ~84 %/j de frais pour atteindre 2,5 à σ = 41 %/j — la formule rejette déjà).
+        const pts: SigmaScanPoint[] = series
+          .map((r) => ({ t: r.scanned_at, priceXy: r.current_price }))
+          .filter((x) => x.priceXy > 0);
+        if (p.current_price > 0) pts.push({ t: scannedAt, priceXy: p.current_price });
         const v = s1Gate(p, pts);
-        // Cohérence d'échelle : realizedVolatility plafonne le σ JOURNALIER à 2/√24 ≈ 0,41 ;
-        // le σ intraday de la porte n'était pas plafonné, ce qui laissait passer des pools à
-        // régime violent (σ 4 h > 41 %/j) que tous les autres filtres rejettent. On applique
-        // le même plafond : S1 ne peut pas être plus permissive que le reste du bot.
-        const SIGMA_DAILY_CAP = 2 / Math.sqrt(24);
-        const verdict =
-          v.ok && v.sigma > SIGMA_DAILY_CAP
-            ? ({ ok: false, reason: `S1 σ intraday ${(v.sigma * 100).toFixed(0)}%/j > plafond ${((SIGMA_DAILY_CAP) * 100).toFixed(0)}%/j` } as const)
-            : v;
-        if (verdict.ok) {
+        if (v.ok) {
           s1SigmaAvailable++;
-          s1 = verdict;
+          s1 = v;
         } else {
-          rejected.push({ pool: p, reason: `${verdict.reason} · série ${series.length} pts` });
+          rejected.push({ pool: p, reason: `${v.reason} · série ${series.length} pts` });
           continue;
         }
       }
