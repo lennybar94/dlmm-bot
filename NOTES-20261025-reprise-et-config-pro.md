@@ -223,3 +223,36 @@ jetons, et surtout **aucun compte de position DLMM vivant** (piège de la
 close partielle, USDC-SOL #331). Tout reliquat est rapatrié vers le Ledger
 d'abord. L'effacement est ensuite irréversible : c'est la décision datée de
 David, à écrire de sa main dans le LISEZ-MOI d'archive.
+
+## 8. Porte S1 : la formule DLMM-Claude fait foi (remplace §7-1 et §7-3 pour la porte)
+
+Formule relevée par Hermes dans `dlmm-claude/src/policy.ts` et `config.ts`
+(cf. `REPONSE-HERMES-20261025.md`, branche `hermes/reponse-20261025`) :
+`R = 2·W·f / σ²`, avec f = fees/TVL 24 h nets du protocole,
+W = largeur log effective (on-chain, sinon clamp(9σ, 0,01, 0,25)), et σ =
+σ journalier **intraday** sur une fenêtre de 4 h (Σr²/Δt, au moins 12
+rendements). Seuils : rMin 2,5 ET rMin1h 2,0, plus un plancher minFeeDaily
+de 0,25 %/j.
+
+- Elle se reprend **en bloc, telle quelle** : formule, W, double seuil et
+  plancher. La porte `f/(σ²/8)` du §7-3 est retirée.
+- Le σ de la porte doit être **le même estimateur intraday 4 h**. Si W n'est
+  pas clampé, R = 18·f/σ : un biais sur σ déplace R d'autant. Pour un
+  memecoin, le σ daily (close-to-close comme Parkinson) sous-estime le σ
+  intraday. R serait alors surestimé et la porte trop permissive, soit le
+  mauvais sens d'erreur. Donc pas de σ daily dans cette porte.
+- Il n'y a pas besoin de source externe. Le bot enregistre `current_price`
+  dans `pool_scans` à chaque scan (5 min), soit 48 rendements en 4 h. On
+  porte l'estimateur de DLMM-Claude sur cette série ; une pool sans
+  ≥ 12 rendements est refusée. Point d'attention : sur les pools X-USDC,
+  `current_price` est exprimé en SOL (bug wNEAR). Les rendements y seraient
+  pollués par les mouvements du SOL, il faut donc utiliser le prix natif X/Y.
+- Le σ daily direct (√24 supprimé) ne sert qu'aux autres usages. Corriger le
+  √24 change `MAX_VOL_24H`, `strategyForVolatility` et
+  `binsPerSideForVolatility`, qui ont été calibrés sur le σ gonflé. Pour
+  garder un comportement identique, il faut diviser leurs seuils par √24 :
+  0,6 → 0,12 ; 0,1/0,3 → 0,02/0,06 ; et multiplier le mapping des bins
+  par √24. Les valeurs deviennent honnêtes, le comportement ne bouge pas.
+- Destination du code : une branche dédiée avec une PR ouverte, sans merge
+  dans main tant que le bot ne redémarre pas. main reste l'état de
+  l'archive (décision David).
