@@ -452,6 +452,22 @@ export const config = {
   s1PoolWidthMax: num("S1_POOL_WIDTH_MAX", 0.25),
 };
 
+// ⚠️ Garde d'échelle (audit PR #3, bloquant 2) : MAX_VOL_24H et S1_SIGMA_MIN_RETURNS sont
+// lus depuis des .env écrits avant le fix √24. σ étant désormais journalier DIRECT
+// (plafond interne 2/√24 ≈ 0,408), un 0,6 hérité du fichier ne rejette plus AUCUNE pool :
+// changement de comportement silencieux au redémarrage. On refuse donc le démarrage tant
+// qu'une valeur de l'ancienne échelle traîne dans l'environnement.
+const SIGMA_SCALE_CUTOFF = 2 / Math.sqrt(24); // 0,4082 — tout ce qui est ≥ est sur l'ancienne échelle
+if (config.maxVol24h >= SIGMA_SCALE_CUTOFF) {
+  throw new Error(
+    `[ÉCHELLE σ] MAX_VOL_24H=${config.maxVol24h} est une valeur de l'ANCIENNE échelle ` +
+      `(σ gonflé ×√24). Depuis le fix NOTES-20261025 §2-1, σ est journalier direct et est ` +
+      `plafonné à ${SIGMA_SCALE_CUTOFF.toFixed(4)} : cette valeur ne rejetterait plus aucune ` +
+      `pool. Divise la valeur par √24 (0,6 → 0,1225) dans le .env concerné. ` +
+      `Démarrage refusé volontairement.`
+  );
+}
+
 /** Garde d'exécution : interdit tout passage en réel sauf config explicite. */
 export function assertPaperOnly(action: string): void {
   if (!config.realMode || config.realConfirm !== "CONFIRMED-REAL-MODE") {

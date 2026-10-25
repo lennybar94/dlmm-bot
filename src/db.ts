@@ -263,25 +263,46 @@ if (!poolScanCols.some((c) => c.name === "s1_r24")) {
   db.exec("ALTER TABLE pool_scans ADD COLUMN s1_r24 REAL");
 }
 
-// ── Migration d'UNITÉ (fix 25/10, étape 2/4) ──
-// pool_scans.vol_24h et outcome_reviews.vol_24h historiques sont sur l'échelle GONFLÉE ×√24
-// (bougies DAILY traitées en horaires). Les seuils étant désormais en σ daily direct, un
-// ancien 0,15 serait classé « > 6 % » au lieu de « moyen » : le tuner apprendrait sur des
-// bandes fausses. Division UNE SEULE FOIS par √24, idempotente via meta.
-// ⚠️ IRRÉVERSIBLE sur la base touchée : sauvegarder le fichier AVANT la première exécution
-// (procédure dans la PR). Le code de main relit mal une base déjà migrée.
-if (!getMeta("sigma_unit_fix_at")) {
+// ── Unité σ : LA MIGRATION N'AUTOMATIQUE (audit PR #3, point important) ──
+// pool_scans.vol_24h et outcome_reviews.vol_24h historiques sont sur l'échelle GONFLÉE ×√24.
+// Les seuils étant en σ daily direct, un ancien 0,15 serait lu « > 6 % » au lieu de « moyen »
+// et le tuner apprendrait sur des bandes fausses. La conversion est IRRÉVERSIBLE et main
+// relit mal une base déjà convertie : elle ne doit donc JAMAIS se déclencher par un simple
+// import de db.ts (dashboard, rapport, real-monitor sur la mauvaise base suffisaient).
+// → commande explicite : npm run migrate:sigma-unit   (scripts/migrate-sigma-unit.ts)
+// Le marqueur meta sigma_unit_fix_at sert à la fois de preuve et de garde anti-double-pass.
+const SIGMA_MIGRATION_KEY = "sigma_unit_fix_at";
+
+/** État de la base vis-à-vis de l'unité σ (utilisé par le script de migration). */
+export function sigmaUnitStatus(): { migratedAt: number | null } {
+  const row = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(SIGMA_MIGRATION_KEY) as
+    | { value: string }
+    | undefined;
+  return { migratedAt: row ? Number(row.value) : null };
+}
+
+/** Convertit une seule fois vol_24h (÷√24). Refuse si déjà fait ; exige une sauvegarde. */
+export function migrateSigmaUnit(opts: { confirmedBackup: boolean }): { ok: boolean; message: string } {
+  if (!opts.confirmedBackup)
+    return { ok: false, message: "Refusé : sauvegarde du fichier .env/DB non confirmée (--confirm-backup)." };
+  const cur = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(SIGMA_MIGRATION_KEY) as { value: string } | undefined;
+  if (cur) return { ok: false, message: `Déjà migré (${cur.value}) — aucun traitement.` };
   const cut = Date.now();
   const sq = Math.sqrt(24);
   db.transaction(() => {
-    db.prepare(
+    const a = db.prepare(
       `UPDATE pool_scans SET vol_24h = vol_24h / ? WHERE scanned_at < ? AND vol_24h IS NOT NULL AND vol_24h > 0`
     ).run(sq, cut);
-    db.prepare(
+    const b = db.prepare(
       `UPDATE outcome_reviews SET vol_24h = vol_24h / ? WHERE reviewed_at < ? AND vol_24h IS NOT NULL AND vol_24h > 0`
     ).run(sq, cut);
-    setMeta("sigma_unit_fix_at", String(cut));
+    db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(SIGMA_MIGRATION_KEY, String(cut));
+    setMeta("sigma_unit_migration_rows", `${a.changes}+${b.changes}`);
   })();
+  const rows = getMeta("sigma_unit_migration_rows") ?? "?";
+  return { ok: true, message: `vol_24h divisé par √24 — lignes traitées ${rows}, marqueur ${cut}.` };
 }
 
 export function logEvent(

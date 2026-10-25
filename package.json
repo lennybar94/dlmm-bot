@@ -13,6 +13,7 @@
     "real:shadow": "tsx scripts/real-shadow.ts",
     "real:monitor": "tsx scripts/real-monitor.ts",
     "scan:only": "tsx scripts/scan-only.ts",
+    "migrate:sigma-unit": "tsx scripts/migrate-sigma-unit.ts",
     "monitor": "tsx scripts/monitor.ts",
     "accel:monitor": "tsx scripts/accel-monitor.ts",
     "report:daily": "tsx scripts/report-daily.ts",
