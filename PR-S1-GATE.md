@@ -63,6 +63,11 @@ Portée : `ensureSigmaUnitMarker()` + `assertSigmaUnitMigrated()` sont appelés 
 un contrôle par script finirait par en oublier un, et chacun écrirait des lignes au nouveau
 format dans une base ancienne.
 
+La garde compte `pool_scans` **ET** `outcome_reviews` : `update:rules` crée les reviews du
+jour avant d'appeler `runTune()`, donc une base sans aucun scan peut apporter ses propres
+volatilités gonflées par cette voie. Cas vérifié explicitement (0 scan + 1 review ancienne
+→ refus).
+
 Vérifié dans les deux sens : copie de l'archive → refus (« 711361 lignes », message avec la
 sauvegarde et la commande) puis, après `migrate:sigma-unit --confirm-backup` (2,0000 →
 0,4082, 711 361 + 145 lignes), scan autorisé ; base neuve vide → marqueur posé, démarrage OK.

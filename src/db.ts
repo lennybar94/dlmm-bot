@@ -327,17 +327,26 @@ function sigmaUnitStatusRaw(): { value: string } | undefined {
 }
 
 /** true si la base contient des volatilités non converties (échelle gonflée ×√24). */
+/** Lignes non converties dans les DEUX tables qui stockent un vol_24h.
+ * outcome_reviews est indispensable : update:rules crée les reviews du jour AVANT
+ * d'appeler runTune(). Sur une base marquée « neuve » (aucun scan), ces reviews apportent
+ * leur propre vol_24h — en ne regardant que pool_scans, le tuner apprendrait sur des bandes
+ * fausses alors que la garde est passée. (mineur 1, relecture bad8871) */
+function legacySigmaRows(): number {
+  if (sigmaUnitStatusRaw() !== undefined) return 0;
+  const a = db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number };
+  const b = db.prepare(`SELECT COUNT(*) c FROM outcome_reviews WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number };
+  return a.c + b.c;
+}
+
 export function sigmaUnitNeedsMigration(): boolean {
-  if (sigmaUnitStatusRaw() !== undefined) return false;
-  const rows = db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number };
-  return rows.c > 0;
+  return legacySigmaRows() > 0;
 }
 
 /** Sur base vide uniquement : pose le marqueur, puisqu'il n'y a rien à convertir. */
 export function ensureSigmaUnitMarker(): void {
   if (sigmaUnitStatusRaw() !== undefined) return;
-  const rows = db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number };
-  if (rows.c === 0) {
+  if (legacySigmaRows() === 0) {
     setMeta(SIGMA_MIGRATION_KEY, String(Date.now()));
     setMeta("sigma_unit_note", "base sans aucune volatilité stockée : marqueur posé sans conversion");
   }
@@ -346,7 +355,7 @@ export function ensureSigmaUnitMarker(): void {
 /** Refuse de lire/écrire sur une base dont le vol_24h est sur l'ancienne échelle. */
 export function assertSigmaUnitMigrated(who: string): void {
   if (!sigmaUnitNeedsMigration()) return;
-  const rows = (db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE vol_24h IS NOT NULL AND vol_24h > 0`).get() as { c: number }).c;
+  const rows = legacySigmaRows();
   throw new Error(
     `[ÉCHELLE σ] ${who} refuse de démarrer : cette base contient ${rows} lignes de vol_24h ` +
       `sur l'ANCIENNE échelle (σ gonflé ×√24) et le marqueur meta '${SIGMA_MIGRATION_KEY}' est ` +
