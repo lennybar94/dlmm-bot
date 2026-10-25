@@ -13,8 +13,8 @@ de main relit mal une base migrée (double division). Procédure :
 cp data/dlmm-bot.db data/dlmm-bot.db.pre-s1-$(date +%Y%m%d-%H%M)
 sqlite3 data/dlmm-bot.db "SELECT COUNT(*) FROM pool_scans"   # noter le compte
 
-# 2) une seule exécution, qui pose le marqueur meta sigma_unit_fix_at
-npm run scan:only
+# 2) migration explicite (elle ne part plus jamais toute seule)
+npm run migrate:sigma-unit -- --confirm-backup
 
 # 3) vérifier : max vol_24h ≈ 0,41 (= 2,0/√24) et marqueur présent
 sqlite3 data/dlmm-bot.db "SELECT MAX(vol_24h) FROM pool_scans WHERE vol_24h>0"
