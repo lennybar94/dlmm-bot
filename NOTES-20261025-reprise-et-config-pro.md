@@ -176,3 +176,50 @@ les DEUX moitiés) :
 
 Pas un conseil financier. Aucune transaction n'a été envoyée, aucun réglage
 de prod n'a été modifié.
+
+## 7. Suite du 25/10 — run réel (Hermes) et arbitrages
+
+**Backtest config pro sur données réelles** (lancé par Hermes sur le serveur :
+SOLUSDT perps Binance, 180 j, 259 199 bougies 1 m, 28/04→25/10, 6 + 2 bps par
+exécution) : PF 0,14 à 0,39 selon le TF, R moyen −0,97 à −2,04, 2 à 19 % de
+jours verts, aucune configuration au-dessus de PF 1 sur l'une ou l'autre
+moitié. Contrôle sans frais (5 m) : PF 1,02, R +0,01 (1re moitié 1,30,
+2e moitié 0,75). **NO-GO définitif** selon les critères du §4 : l'avantage brut
+est nul, les frais ne font que rendre la perte visible. Aucun paramètre ne
+sera retouché pour « sauver » la config.
+
+**Arbitrages sur les corrections du §6 :**
+
+1. σ : pas de nouvelle source. Les bougies sont daily, donc σ daily direct
+   (√24 supprimé). Estimateur : `max(close-to-close, Parkinson)` sur les
+   10 bougies, Parkinson = √(moyenne(ln(H/L)²) / (4 ln 2)). Il exploite
+   les mèches intraday déjà présentes dans les bougies daily, il est moins
+   bruité sur 9 rendements, et prendre le max reste prudent.
+2. La porte frais/LVR s'applique à **toutes** les stratégies, y compris
+   bidask-dip/topblast/resurrect. Si elle ferme le book memes presque tout
+   le temps (fees/TVL médiane ≈ 0,28 %/j contre σ²/8 ≈ 0,5-1,1 %/j pour
+   σ = 20-30 %/j), c'est la mesure qui confirme le §1-2, pas un défaut à
+   contourner. Pas de baisse du seuil pour rouvrir la porte.
+3. Concentration : **pas de multiplicateur**. Tant que le prix est dans la
+   range, les frais ET le LVR d'une position croissent tous deux en
+   proportion de sa concentration, et le facteur s'annule dans le ratio.
+   Le « × concentration » du §2-3 et du §6-3 était une erreur de ma part.
+   Porte codée : `R = (fee_tvl_ratio_24h/100 × (1 − protocol_fee_pct/100))
+   / (σ_daily² / 8)`. Condition de validité : le seuil 2,5 ne vaut qu'avec
+   la formule qui l'a calibré. Reprendre la formule exacte des backtests
+   DLMM-Claude (archive `dlmm-claude/`) ; si elle diffère de celle-ci, c'est
+   elle qui fait foi, ou le seuil doit être re-mesuré.
+4. Corrections 1-2 et règles calibrées dessus (réserve d'Hermes, juste) :
+   `MIN_DIP_DRAWDOWN`, `analyzeTrend` et `fibSwingFromCandles` ont été réglés
+   sur la fenêtre réelle de 10 jours. On **renomme et on documente** (drawdown
+   à 10 j, drift daily, swing 10 j) **sans changer le comportement**. Le book
+   memes ne rouvre pas, donc il n'y a rien à recalibrer.
+5. Intouchés : recovery-exit, cooling-off, TP 10 $, comptabilité SOL. Le veto
+   L4-A garde sa condition de preuve par rejeu avant de bloquer.
+
+**Clé du wallet HsstWQ (archive serveur)** : avant d'effacer la seule copie,
+vérifier on-chain que HsstWQ ne détient plus rien : solde SOL, comptes de
+jetons, et surtout **aucun compte de position DLMM vivant** (piège de la
+close partielle, USDC-SOL #331). Tout reliquat est rapatrié vers le Ledger
+d'abord. L'effacement est ensuite irréversible : c'est la décision datée de
+David, à écrire de sa main dans le LISEZ-MOI d'archive.
