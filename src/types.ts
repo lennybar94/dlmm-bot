@@ -86,6 +86,9 @@ export interface StrategyHint {
 export interface OpportunityScore {
   pool: Pool;
   vol_24h: number;
+  // Porte S1 (étape 3/4) : σ intraday et R24 mesurés au scan.
+  sigma_intraday?: number | null;
+  s1_r24?: number | null;
   score: number;
   signals: string[];
   strategyHint: StrategyHint;

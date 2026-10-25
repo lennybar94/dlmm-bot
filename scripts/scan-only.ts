@@ -5,7 +5,10 @@
 import { runScan } from "../src/scanner.js";
 import { logEvent } from "../src/db.js";
 
-const scan = await runScan();
+// --now=<epoch ms> : horloge du test de fumée (copie de base figée dans le temps). La prod
+// n'utilise pas cet argument.
+const nowArg = process.argv.slice(2).map((a) => a.match(/^--now=(.*)$/)).find(Boolean);
+const scan = await runScan(nowArg ? Number(nowArg[1]) : undefined);
 logEvent(
   "scan",
   `Scan terminé : ${scan.poolsSeen} pools vus, ${scan.poolsKept} retenus, ${scan.opportunities.length} opportunités scorées.`

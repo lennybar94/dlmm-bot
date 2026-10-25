@@ -433,6 +433,82 @@ export function binsPerSideForVolatility(volDaily: number, preset: StrategyPrese
   return Math.max(lo, Math.min(hi, target));
 }
 
+// ── Porte S1 frais/LVR — formule DLMM-Claude EN BLOC (NOTES-20261025 §8) ──
+// R = 2·W·f/σ², f = fees/TVL nets du protocole par jour, W = largeur log effective du pool
+// (hypothèse clamp(9·σ, 0,01, 0,25) faute de mesure on-chain), σ = σ INTRADAY fenêtre 4 h
+// sur la série pool_scans.current_price (estimateur mean-zero Σr²/Δt, ≥12 rendements — le
+// même que DLMM-Claude, donc le même seuil 2,5). Double seuil rMin 2,5 (24 h) ET rMin1h 2,0,
+// plus plancher absolu minFeeDaily 0,25 %/j (S7). S'applique à TOUTES les stratégies.
+// ⚠️ Unité (piège wNEAR 29/09) : current_price est SOL/token sur X-SOL et $/token sur
+// X-USDC — la normalisation est faite par l'appelant sur les points X-SOL.
+
+const DAY_MS = 86_400_000;
+
+export interface SigmaScanPoint {
+  t: number; // epoch ms
+  priceXy: number; // prix du token dans son quote (unité homogène sur toute la série)
+}
+
+/** Estimateur mean-zero Σr²/Δt (identique à dlmm-claude/src/features.ts). */
+export function sigmaIntradayFromScans(
+  points: SigmaScanPoint[],
+  minReturns: number
+): { sigma: number | null; n: number } {
+  let acc = 0;
+  let n = 0;
+  for (let i = 1; i < points.length; i++) {
+    const dt = (points[i].t - points[i - 1].t) / DAY_MS;
+    if (!(dt > 30_000 / DAY_MS)) continue; // doublons < 30 s ignorés (comme DLMM-Claude)
+    const a = points[i - 1].priceXy;
+    const b = points[i].priceXy;
+    if (!(a > 0 && b > 0)) continue;
+    const r = Math.log(b / a);
+    acc += (r * r) / dt;
+    n++;
+  }
+  if (n < minReturns) return { sigma: null, n };
+  return { sigma: Math.sqrt(acc / n), n };
+}
+
+/** Largeur log effective W = clamp(perSigma·σ, min, max) — hypothèse DLMM-Claude. */
+export function poolWidthLog(sigma: number): number {
+  return Math.min(
+    config.s1PoolWidthMax,
+    Math.max(config.s1PoolWidthMin, config.s1PoolWidthPerSigma * sigma)
+  );
+}
+
+/** R = 2·W·f/σ² (grandeur de POOL : la concentration s'annule, §7-3 Claude retiré). */
+export function feeLvrRatio(wEff: number, feeDailyNet: number, sigma: number): number {
+  if (!(sigma > 0)) return 0;
+  return (2 * wEff * feeDailyNet) / (sigma * sigma);
+}
+
+export type S1Verdict =
+  | { ok: true; r24: number; r1h: number; sigma: number; n: number; w: number }
+  | { ok: false; reason: string };
+
+/** Évalue la porte S1 (fee_tvl_ratio en %, net du protocole ; série de scans de la pool). */
+export function s1Gate(
+  p: Pick<Pool, "fee_tvl_ratio_24h" | "fee_tvl_ratio_1h" | "protocol_fee_pct">,
+  sigmaPoints: SigmaScanPoint[]
+): S1Verdict {
+  const { sigma, n } = sigmaIntradayFromScans(sigmaPoints, config.s1SigmaMinReturns);
+  if (sigma === null || !(sigma > 0))
+    return { ok: false, reason: `S1 σ intraday insuffisante (${n} rendements < ${config.s1SigmaMinReturns})` };
+  const net = 1 - p.protocol_fee_pct / 100;
+  const f24 = (p.fee_tvl_ratio_24h / 100) * net;
+  const f1h = (p.fee_tvl_ratio_1h / 100) * net;
+  const w = poolWidthLog(sigma);
+  const r24 = feeLvrRatio(w, f24, sigma);
+  const r1h = feeLvrRatio(w, f1h * 24, sigma);
+  if (f24 < config.s1MinFeeDaily)
+    return { ok: false, reason: `S7 fees 24 h ${(f24 * 100).toFixed(2)} %/j < ${(config.s1MinFeeDaily * 100).toFixed(2)} %` };
+  if (r24 < config.s1RMin) return { ok: false, reason: `S1 R24 ${r24.toFixed(2)} < ${config.s1RMin}` };
+  if (r1h < config.s1RMin1h) return { ok: false, reason: `S1 R1h ${r1h.toFixed(2)} < ${config.s1RMin1h}` };
+  return { ok: true, r24, r1h, sigma, n, w };
+}
+
 /**
  * Drawdown du prix actuel vs high des 24 dernières heures (bougies 1h).
  * 0.3 = prix 30% sous le high — condition d'entrée "rebond après dump".

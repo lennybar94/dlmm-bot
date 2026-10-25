@@ -439,6 +439,17 @@ export const config = {
 
   // Intervalle monitor (minutes)
   monitorIntervalMin: num("MONITOR_INTERVAL_MIN", 15),
+
+  // ── Porte S1 frais/LVR (NOTES-20261025 §8, formule DLMM-Claude en bloc) ──
+  s1GateEnabled: bool("S1_GATE_ENABLED", true),
+  s1RMin: num("S1_RMIN", 2.5), // R24 = 2·W·f/σ² ≥ 2,5
+  s1RMin1h: num("S1_RMIN_1H", 2.0), // R1h sur le rythme de fees 1 h ×24
+  s1MinFeeDaily: num("S1_MIN_FEE_DAILY", 0.0025), // plancher 0,25 %/j net protocole (S7)
+  s1SigmaWindowHours: num("S1_SIGMA_WINDOW_HOURS", 4), // ≈48 rendements à 5 min/scan
+  s1SigmaMinReturns: num("S1_SIGMA_MIN_RETURNS", 12), // en dessous : refus (§8)
+  s1PoolWidthPerSigma: num("S1_POOL_WIDTH_PER_SIGMA", 9), // W = clamp(9·σ, min, max)
+  s1PoolWidthMin: num("S1_POOL_WIDTH_MIN", 0.01),
+  s1PoolWidthMax: num("S1_POOL_WIDTH_MAX", 0.25),
 };
 
 /** Garde d'exécution : interdit tout passage en réel sauf config explicite. */

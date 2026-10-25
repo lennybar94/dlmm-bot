@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS pool_scans (
   is_blacklisted INTEGER,
   current_price REAL,
   vol_24h REAL,
+  sigma_intraday REAL,
+  s1_r24 REAL,
   score REAL,
   signals TEXT,
   strategy_hint TEXT,
@@ -180,6 +182,8 @@ CREATE TABLE IF NOT EXISTS outcome_reviews (
   -- buckets d'évidence (caractéristiques d'entrée, dénormalisées)
   fee_tvl_ratio_24h REAL,
   vol_24h REAL,
+  sigma_intraday REAL,
+  s1_r24 REAL,
   bin_step INTEGER,
   launchpad TEXT,
   pool_age_days REAL,
@@ -249,6 +253,14 @@ export function getMeta(key: string): string | null {
     | { value: string }
     | undefined;
   return row ? row.value : null;
+}
+
+// Colonnes de mesure S1 (étape 3/4).
+if (!poolScanCols.some((c) => c.name === "sigma_intraday")) {
+  db.exec("ALTER TABLE pool_scans ADD COLUMN sigma_intraday REAL");
+}
+if (!poolScanCols.some((c) => c.name === "s1_r24")) {
+  db.exec("ALTER TABLE pool_scans ADD COLUMN s1_r24 REAL");
 }
 
 // ── Migration d'UNITÉ (fix 25/10, étape 2/4) ──

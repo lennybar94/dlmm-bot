@@ -4,7 +4,7 @@
 import { db, logEvent } from "./db.js";
 import { config } from "./config.js";
 import { fetchOhlcv, fetchNewestPools, fetchTopPools } from "./api.js";
-import { realizedVolatility, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, rsi, analyzeTrend, DEFAULT_STRATEGY } from "./strategies.js";
+import { realizedVolatility, s1Gate, sigmaIntradayFromScans, type SigmaScanPoint, buildStrategyHint, binIdFromPrice, dipTargetForPool, binsForDumpTarget, drawdownFromHigh, isQuickInOutCandidate, isTopBlastCandidate, isFeePrinterCandidate, isResurrectionCandidate, fibSwingFromCandles, fibRetraceLevel, rsi, analyzeTrend, DEFAULT_STRATEGY } from "./strategies.js";
 import { getRules, strategyForVolatility, type RuleSet } from "./rules.js";
 import type { OpportunityScore, Pool } from "./types.js";
 
@@ -51,6 +51,15 @@ function passesFilters(p: Pool, rules: RuleSet): { ok: boolean; reason: string }
  * fixes de l'API (30m/1h) sont trop lentes pour voir un démarrage tôt).
  * Retourne { delta, minutes } ou null si pas d'historique / delta incohérent.
  */
+// Série σ de la porte S1 : prix archivés sur la fenêtre. Borne haute <= scannedAt : la
+// ligne du tour courant n'existe pas encore (INSERT en fin de run) donc pas de doublon en
+// prod ; sur copie figée, un point à Δt≈0 est ignoré par l'estimateur.
+const sigmaSeriesStmt = db.prepare(
+  `SELECT scanned_at, current_price FROM pool_scans
+   WHERE pool_address = ? AND scanned_at >= ? AND scanned_at <= ? AND current_price > 0 ORDER BY scanned_at`
+);
+const countScanStmt = db.prepare(`SELECT COUNT(*) c FROM pool_scans WHERE scanned_at < ?`);
+
 const prevScanStmt = db.prepare(
   `SELECT scanned_at, volume_24h FROM pool_scans
    WHERE pool_address = ? AND scanned_at < ? AND volume_24h > 0
@@ -202,8 +211,10 @@ export function scorePool(
   return { score, signals };
 }
 
-export async function runScan(): Promise<ScanResult> {
-  const scannedAt = Date.now();
+/** nowMs : horloge injectable pour le test de fumée sur copie figée. La prod appelle
+ * runScan() sans argument → Date.now(). */
+export async function runScan(nowMs?: number): Promise<ScanResult> {
+  const scannedAt = nowMs ?? Date.now();
   const rules = getRules();
   const pools = await fetchTopPools(config.scanTopPools);
   const kept: Pool[] = [];
@@ -263,6 +274,9 @@ export async function runScan(): Promise<ScanResult> {
   }
 
   // Volatilité réalisée sur les pools retenus (30 RPS max → délai).
+  let s1SigmaAvailable = 0;
+  let ohlcvFailures = 0;
+  const rejectedBeforeLoop = rejected.length; // filtres passesFilters (pools jamais dans kept)
   const opportunities: OpportunityScore[] = [];
   for (let i = 0; i < kept.length; i++) {
     const p = kept[i];
@@ -293,6 +307,43 @@ export async function runScan(): Promise<ScanResult> {
         });
         continue;
       }
+      // PORTE S1 frais/LVR (NOTES-20261025 §8 — formule DLMM-Claude en bloc, TOUTES stratégies).
+      // σ = mean-zero Σr²/Δt sur les 4 dernières heures RÉELLES de pool_scans (en prod le
+      // cron tourne toutes les 5 min ⇒ ~48 rendements) + snapshot live du tour courant (la
+      // ligne du scan n'est pas encore insérée). Fenêtre ancrée sur scannedAt, jamais sur le
+      // dernier scan archivé : S1 juge le régime courant. Moins de 12 rendements → REFUS DUR
+      // (§8 : un filtre de sécurité à données manquantes refuse ; l'historique total ne dit
+      // rien du régime des 4 dernières heures). Aucune exception, même au premier lancement.
+      // Unité : points X-SOL normalisés par le prix SOL du jour (current_price est SOL/token
+      // sur X-SOL et $/token sur X-USDC — piège wNEAR 29/09), sinon le σ du memecoin est
+      // pollué par les mouvements du quote.
+      let s1: { ok: boolean; reason?: string; r24?: number; r1h?: number; sigma?: number; n?: number; w?: number } | null = null;
+      if (config.s1GateEnabled) {
+        const sinceMs = scannedAt - config.s1SigmaWindowHours * 3_600_000;
+        const series = sigmaSeriesStmt.all(p.address, sinceMs, scannedAt) as {
+          scanned_at: number; current_price: number;
+        }[];
+        const solPool = pools.find((x) => /^(SOL-(USDC|USDT)|USDC-SOL|USDT-SOL)$/.test(x.name));
+        const solUsdNow = solPool?.current_price ?? 0; // SOL-USDC : current_price ≈ $/SOL
+        const yIsSol = (p.token_y?.symbol ?? "") === "SOL";
+        const pts: SigmaScanPoint[] = series
+          .map((r) => ({
+            t: r.scanned_at,
+            priceXy: yIsSol && solUsdNow > 0 ? r.current_price * solUsdNow : r.current_price,
+          }))
+          .filter((x) => x.priceXy > 0);
+        if (p.current_price > 0)
+          pts.push({ t: scannedAt, priceXy: yIsSol && solUsdNow > 0 ? p.current_price * solUsdNow : p.current_price });
+        const v = s1Gate(p, pts);
+        if (v.ok) {
+          s1SigmaAvailable++;
+          s1 = v;
+        } else {
+          rejected.push({ pool: p, reason: `${v.reason} · série ${series.length} pts` });
+          continue;
+        }
+      }
+
       // Priorité de playbook par ÂGE (ressenti des users X, résout le
       // recouvrement spike / bidask-dip) :
       // - pool RÉCENT (≤ 2 j) en spike ≥ 30K$/min → top blast (satsmonkes,
@@ -308,6 +359,10 @@ export async function runScan(): Promise<ScanResult> {
       if (quick) strategy = "topblast";
       else if (resurrect) strategy = "resurrect";
       const { score, signals } = scorePool(p, vol, rules, strategy);
+      if (s1?.ok)
+        signals.push(
+          `✅ porte S1 : R24 ${s1.r24!.toFixed(2)} · R1h ${s1.r1h!.toFixed(2)} · σ intraday ${(s1.sigma! * 100).toFixed(1)}%/j (${s1.n} rendements) · W ${s1.w!.toFixed(3)}`
+        );
       if (quick)
         signals.push("⚡ top blast (satsmonkes) : première jambe — SOL-only 10-15 bins, fees en quelques minutes");
       // ♻️ Résurrection (Nowload 2026-08-25) : vieux token en spike de volume
@@ -434,8 +489,17 @@ export async function runScan(): Promise<ScanResult> {
       }
       const hint = buildStrategyHint(p, activeBinId, vol, strategy, p.current_price, candles);
       if (hint.dipTarget !== undefined) hint.drawdown24h = drawdown;
-      opportunities.push({ pool: p, vol_24h: vol, score, signals, strategyHint: hint });
+      opportunities.push({
+        pool: p,
+        vol_24h: vol,
+        sigma_intraday: s1?.ok ? s1.sigma ?? null : null,
+        s1_r24: s1?.ok ? s1.r24 ?? null : null,
+        score,
+        signals,
+        strategyHint: hint,
+      });
     } catch (err) {
+      ohlcvFailures++;
       logEvent("scan", `OHLCV échoué pour ${p.name}: ${String(err)}`, {
         poolAddress: p.address,
       });
@@ -449,8 +513,8 @@ export async function runScan(): Promise<ScanResult> {
     `INSERT INTO pool_scans (scanned_at, pool_address, name, token_x_symbol, token_y_symbol,
        tvl, volume_1h, volume_30m, volume_24h, fee_tvl_ratio_1h, fee_tvl_ratio_30m, fee_tvl_ratio_24h, fee_apr_24h, farm_apr,
        base_fee_pct, dynamic_fee_pct, bin_step, launchpad, is_blacklisted, current_price,
-       vol_24h, score, signals, strategy_hint, pool_age_days, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       vol_24h, sigma_intraday, s1_r24, score, signals, strategy_hint, pool_age_days, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertSignal = db.prepare(
     `INSERT INTO signals (created_at, pool_address, name, score, fee_apr_24h, tvl, volume_24h, signal_type, message)
@@ -481,6 +545,8 @@ export async function runScan(): Promise<ScanResult> {
       p.is_blacklisted ? 1 : 0,
       p.current_price,
       opp.vol_24h,
+      opp.sigma_intraday ?? null,
+      opp.s1_r24 ?? null,
       opp.score,
       JSON.stringify(opp.signals),
       JSON.stringify(opp.strategyHint),
@@ -513,8 +579,10 @@ export async function runScan(): Promise<ScanResult> {
       r.pool.launchpad,
       r.pool.is_blacklisted ? 1 : 0,
       r.pool.current_price,
-      0,
-      0,
+      0, // vol_24h
+      null, // sigma_intraday
+      null, // s1_r24
+      0, // score
       JSON.stringify([`rejeté: ${r.reason}`]),
       "{}",
       r.pool.pool_age_days,
@@ -548,8 +616,10 @@ export async function runScan(): Promise<ScanResult> {
       p.launchpad,
       p.is_blacklisted ? 1 : 0,
       p.current_price,
-      0,
-      0,
+      0, // vol_24h
+      null, // sigma_intraday
+      null, // s1_r24
+      0, // score
       JSON.stringify([`👁 radar early (GMGN : voir tôt ≠ entrer tôt) : ${e.note} — pas d'entrée auto`]),
       "{}",
       p.pool_age_days,
@@ -557,9 +627,19 @@ export async function runScan(): Promise<ScanResult> {
     );
   }
 
+  // Vérification de bouclage (audit Claude 25/10) : chaque pool RETENUE par les filtres
+  // d'entrée doit finir en opportunité, en rejet motivé, ou en échec OHLCV — sans perte
+  // silencieuse. Un écart signale un `continue` mort ou une variable écrasée.
+  const accounted = opportunities.length + (rejected.length - rejectedBeforeLoop) + ohlcvFailures;
+  if (accounted !== kept.length) {
+    logEvent(
+      "scan",
+      `⚠️ BOUCLAGE INCOMPLET : ${kept.length} retenues ≠ ${opportunities.length} opportunités + ${rejected.length} rejets + ${ohlcvFailures} OHLCV = ${accounted} (perte ${kept.length - accounted})`
+    );
+  }
   logEvent(
     "scan",
-    `Scan terminé : ${pools.length} pools vus, ${kept.length} retenus, ${opportunities.length} opportunités scorées, ${earlyWatch.length} en radar early.`
+    `Scan terminé : ${pools.length} pools vus, ${kept.length} retenus, ${opportunities.length} opportunités scorées, ${earlyWatch.length} en radar early · S1 σ mesuré sur ${s1SigmaAvailable} · bouclage ${accounted}/${kept.length}.`
   );
   return { scannedAt, poolsSeen: pools.length, poolsKept: kept.length, opportunities, earlyWatch };
 }
